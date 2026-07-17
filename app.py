@@ -955,7 +955,7 @@ elif app_mode == "Club Fines Generator":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 7: UNREGISTERED FINES GENERATOR
+# TOOL 7: UNREGISTERED FINES GENERATOR 17-07-2026
 # ==========================================
 elif app_mode == "Unregistered Player Fines Generator":
     st.title(PAGE_TITLES["unregistered_fines"])
