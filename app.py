@@ -29,7 +29,9 @@ PAGE_TITLES = {
     "player_doc": "📄 Player Word Doc Generator",
     "reg_checks": "🛡️ Weekend Registration and Starring Checks",
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
-    "starring_reports": "🚨 Club Starring & Inactivity Exporter"
+    "starring_reports": "🚨 Club Starring & Inactivity Exporter",
+    "fines_generator": "💸 Club Fines Generator",
+    "unregistered_fines": "💸 Unregistered Player Fines Generator"
 }
 
 # ==========================================
@@ -79,7 +81,9 @@ app_mode = st.sidebar.selectbox("Select Tool", [
     "Player Word Doc Generator", 
     "Registration Checks",
     "Midweek Registration & Starring Check",
-    "Starring & Inactivity Reports"
+    "Starring & Inactivity Reports",
+    "Club Fines Generator",
+    "Unregistered Player Fines Generator"
 ])
 
 # ==========================================
@@ -210,7 +214,6 @@ if app_mode == "Bulk Averages Calculator":
                     league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
                     player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
                     
-                    # Apply row-based contextual name cleansing
                     batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map), axis=1)
                     bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map), axis=1)
                     
@@ -340,13 +343,11 @@ elif app_mode == "Player Word Doc Generator":
         if 'player_search_active' not in st.session_state:
             st.session_state.player_search_active = False
 
-        # When the user clicks the search button, activate the search state and reset the data cache
         if execute_search:
             st.session_state.player_search_active = True
             st.session_state.player_search_query = search_query
             st.session_state.data_loaded = False 
 
-        # If a search is active, render the results and selection UI
         if st.session_state.player_search_active:
             current_query = st.session_state.player_search_query
             
@@ -361,7 +362,6 @@ elif app_mode == "Player Word Doc Generator":
             elif not current_query:
                 st.warning("Please enter a player name to search.")
             else:
-                # Cache the data processing so interacting with the multiselect is instant
                 if not st.session_state.get('data_loaded'):
                     with st.spinner("Searching datasets and building options..."):
                         reg_players = pd.read_excel(f_reg)
@@ -416,15 +416,9 @@ elif app_mode == "Player Word Doc Generator":
                         
                         raw_unique_players = list(set(found_batters + found_bowlers))
                         
-                        # Custom sort key: Surname, First Name, Club
                         def player_sort_key(name):
-                            # Remove any bracketed club names added by resolve_duplicates
                             pure_name = name.split(' (')[0].strip()
-                            
-                            # Get the club name for the third sorting tier
                             club = player_club_map.get(name.lower(), "Unknown Club").lower()
-                            
-                            # Split into surname and first name(s)
                             parts = pure_name.split()
                             if len(parts) > 1:
                                 surname = parts[-1].lower()
@@ -434,18 +428,15 @@ elif app_mode == "Player Word Doc Generator":
                                 firstnames = ""
                             else:
                                 surname, firstnames = "", ""
-                                
                             return (surname, firstnames, club)
                             
-                        # Store processed data in session state
                         st.session_state.matched_batting = matched_batting
                         st.session_state.matched_bowling = matched_bowling
                         st.session_state.unique_players = sorted(raw_unique_players, key=player_sort_key)
                         st.session_state.reg_players = reg_players
                         st.session_state.player_club_map = player_club_map
                         st.session_state.data_loaded = True
- 
-                # Retrieve cached variables
+
                 matched_batting = st.session_state.matched_batting
                 matched_bowling = st.session_state.matched_bowling
                 unique_players = st.session_state.unique_players
@@ -472,21 +463,16 @@ elif app_mode == "Player Word Doc Generator":
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players you want to generate reports for.")
                         
-                        # Checkbox to trigger 'Select All'
                         select_all = st.checkbox("Select all players")
                         
-                        # Format function to append club names dynamically based on actual match data
                         def format_player_display(name):
-                            # If resolve_duplicates already appended a club, return as is
                             if '(' in name and ')' in name:
                                 return name
                             
                             import re
-                            # Fetch the actual scorecard rows for this specific player
                             p_bat = st.session_state.matched_batting[st.session_state.matched_batting['Name'] == name]
                             p_bowl = st.session_state.matched_bowling[st.session_state.matched_bowling['Bowler'] == name]
                             
-                            # 1. Try to get the team directly from the scorecard's "Team" column
                             teams_found = []
                             if 'Team' in p_bat.columns:
                                 teams_found.extend(p_bat['Team'].dropna().tolist())
@@ -494,15 +480,12 @@ elif app_mode == "Player Word Doc Generator":
                                 teams_found.extend(p_bowl['Team'].dropna().tolist())
                                 
                             if teams_found:
-                                # Find the team they played for most often in the search results
                                 most_common_team = max(set(teams_found), key=teams_found.count)
                                 club_clean = str(most_common_team).replace(" Cricket Club", "").replace(" CC", "").strip()
-                                # Strip away "1st XI", "2nd", "3", etc. to leave just the club name
                                 club_clean = re.sub(r'\s+\d(st|nd|rd|th)?\s*XI?$', '', club_clean, flags=re.IGNORECASE).strip()
                                 club_clean = re.sub(r'\s+\d$', '', club_clean).strip()
                                 return f"{name} ({club_clean})"
 
-                            # 2. Fallback: calculate frequency from the match 'Group' strings
                             all_groups = pd.concat([p_bat['Group'], p_bowl['Group']]).dropna().tolist()
                             if all_groups:
                                 team_frequency = {}
@@ -519,12 +502,10 @@ elif app_mode == "Player Word Doc Generator":
                                     inferred_club = re.sub(r'\s+\d$', '', inferred_club).strip()
                                     return f"{name} ({inferred_club})"
                             
-                            # 3. Final Fallback: The master registry map
                             club = st.session_state.player_club_map.get(name.lower(), "Unknown Club")
                             club_clean = str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
                             return f"{name} ({club_clean})"
-                      
-                        # UI for selecting players
+                        
                         selected_players = st.multiselect(
                             "Select players:",
                             options=unique_players,
@@ -568,8 +549,6 @@ elif app_mode == "Player Word Doc Generator":
                                 )
                         else:
                             st.info("Please select at least one player to generate a report.")
-
-
 
 # ==========================================
 # TOOL 3: WEEKEND REGISTRATION CHECKS
@@ -801,7 +780,6 @@ elif app_mode == "Starring & Inactivity Reports":
     st.subheader("Select League Domain")
     domain = st.radio("Choose the dataset domain to audit:", ["Men's", "Women's"], horizontal=True)
 
-    # NEW: Add the checkbox toggle for Irish competitions (Men's only)
     include_irish = False
     if domain == "Men's":
         include_irish = st.checkbox("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
@@ -817,14 +795,12 @@ elif app_mode == "Starring & Inactivity Reports":
             f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"star_bat_{domain}")
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"star_bowl_{domain}")
             
-            # NEW: Show the Irish file paths in the sidebar if checkbox is selected
             if domain == "Men's" and include_irish:
                 f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="star_irish_bat")
                 f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="star_irish_bowl")
 
     st.subheader("Generate Reports")
     if st.button("📦 Process All Clubs & Download ZIP", type="primary"):
-        # Compile list of files to check based on your checkbox choice
         files_to_check = [f_reg, f_alias, f_starring, f_bat, f_bowl]
         if domain == "Men's" and include_irish:
             files_to_check.extend([f_irish_bat, f_irish_bowl])
@@ -836,7 +812,6 @@ elif app_mode == "Starring & Inactivity Reports":
         else:
             with st.spinner(f"Generating {domain} Starring Reports for all clubs..."):
                 try:
-                    # NEW: Pass Irish files to the engine if the checkbox is checked
                     if domain == "Men's" and include_irish:
                         zip_buffer = eng.generate_starring_inactivity_reports(
                             domain, f_reg, f_alias, f_starring, f_bat, f_bowl, f_irish_bat, f_irish_bowl
@@ -873,3 +848,205 @@ elif app_mode == "Starring & Inactivity Reports":
                     )
                 except Exception as e:
                     st.error(f"An error occurred during processing: {str(e)}")
+
+# ==========================================
+# TOOL 6: CLUB FINES GENERATOR
+# ==========================================
+elif app_mode == "Club Fines Generator":
+    st.title(PAGE_TITLES["fines_generator"])
+    st.markdown("Automatically run the registration audit engine to find violations and merge them with forfeited matches to generate a club-by-club fines report.")
+    
+    if not DOCX_AVAILABLE:
+        st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
+    else:
+        st.subheader("Select League Domain")
+        domain = st.radio("Choose the dataset domain to audit:", ["Men's", "Women's", "Midweek"], horizontal=True)
+
+        with st.sidebar:
+            st.divider()           
+            st.subheader("Select Date Range")
+            start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=7), key="fines_start")
+            end_date = st.date_input("End Date", value=datetime.today(), key="fines_end")
+            
+        with st.sidebar:
+            st.divider() 
+            c_files = eng.DEFAULT_FILES.get(domain, eng.DEFAULT_FILES["Men's"])
+            with st.expander("📁 File Path Configurations", expanded=False):
+                st.markdown("*Verify or update the default local file paths below.*")
+                f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"fines_reg_{domain}")
+                f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"fines_alias_{domain}")
+                f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"fines_bat_{domain}")
+                f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"fines_bowl_{domain}")
+                
+                if domain != "Midweek":
+                    f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"fines_starring_{domain}")
+                    f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"fines_league_{domain}")
+                    f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"fines_cup_{domain}")
+                else:
+                    f_starring = st.text_input("Men's Starring Master (Excel)", value=eng.DEFAULT_FILES["Men's"]["starring"], key="fines_mw_starring")
+                    f_weekend_league = st.text_input("Weekend League Structure (Excel)", value=eng.DEFAULT_FILES["Men's"]["league"], key="fines_wknd_league")
+                    f_midweek_league = st.text_input("Midweek League Structure (Excel)", value=c_files["league"], key="fines_mw_league")
+
+        include_irish = False
+        if domain == "Men's":
+            include_irish = st.checkbox("Include Irish Competitions in Audit?", value=False, key="fines_irish_check")
+            if include_irish:
+                with st.sidebar:
+                    with st.expander("📁 Irish File Path Configurations", expanded=False):
+                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="fines_irish_bat")
+                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="fines_irish_bowl")
+        
+        st.divider()
+        st.subheader("Forfeited Matches Data")
+        st.markdown("Contains the teams fined for forfeiting matches.")
+        
+        col1, col2 = st.columns([1, 2])
+        with col1:
+            default_forfeit_path = "Team Fines for forfeiting matches 2026.xlsx"
+            use_default_forfeit = st.checkbox(f"Use local '{default_forfeit_path}'", value=os.path.exists(default_forfeit_path))
+        with col2:
+            f_forfeit = st.file_uploader("Or Upload Forfeits Excel File", type=["xlsx"], key="fines_forfeit_upload")
+
+        st.divider()
+        if st.button("📄 Run Engine & Generate Fines Report", type="primary"):
+            forfeit_path = f_forfeit if f_forfeit is not None else (default_forfeit_path if use_default_forfeit and os.path.exists(default_forfeit_path) else None)
+            
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            if domain != "Midweek":
+                files_to_check.extend([f_starring, f_league])
+                if domain == "Men's" and include_irish:
+                    files_to_check.extend([f_irish_bat, f_irish_bowl])
+            else:
+                files_to_check.extend([f_starring, f_weekend_league, f_midweek_league])
+                
+            missing_files = [f for f in files_to_check if f and not os.path.exists(f)]
+            
+            if missing_files:
+                st.error("Cannot find the following files:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
+            elif start_date > end_date:
+                st.error("Start Date cannot be after End Date.")
+            else:
+                with st.spinner("Running registration audit and compiling fines report..."):
+                    try:
+                        start_ts = pd.to_datetime(start_date)
+                        end_ts = pd.to_datetime(end_date)
+                        
+                        if domain != "Midweek":
+                            if domain == "Men's" and include_irish:
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup)
+                            else:
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup)
+                        else:
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl)
+                            
+                        audit_excel_io.seek(0)
+                        
+                        doc_io = eng.generate_club_fines_report(audit_excel_io, forfeit_path, start_ts, end_ts)
+                        
+                        st.success("✅ Fines report generated successfully!")
+                        st.download_button(
+                            label=f"📥 Download {domain} Fines Report (Word)",
+                            data=doc_io.getvalue(),
+                            file_name=f"NCU_{domain.replace('''s''', '')}_Fines_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )  
+                    except Exception as e:
+                        st.error(f"An error occurred during processing: {str(e)}")
+
+# ==========================================
+# TOOL 7: UNREGISTERED FINES GENERATOR
+# ==========================================
+elif app_mode == "Unregistered Player Fines Generator":
+    st.title(PAGE_TITLES["unregistered_fines"])
+    st.markdown("Automatically run the registration audit engine to generate a standalone fines report isolated exclusively to unregistered players.")
+    
+    if not DOCX_AVAILABLE:
+        st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
+    else:
+        st.subheader("Select League Domain")
+        domain = st.radio("Choose the dataset domain to audit:", ["Men's", "Women's", "Midweek"], horizontal=True, key="unreg_domain")
+
+        with st.sidebar:
+            st.divider()           
+            st.subheader("Select Date Range")
+            start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=7), key="unreg_start")
+            end_date = st.date_input("End Date", value=datetime.today(), key="unreg_end")
+            
+        with st.sidebar:
+            st.divider() 
+            c_files = eng.DEFAULT_FILES.get(domain, eng.DEFAULT_FILES["Men's"])
+            with st.expander("📁 File Path Configurations", expanded=False):
+                st.markdown("*Verify or update the default local file paths below.*")
+                f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"unreg_reg_{domain}")
+                f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"unreg_alias_{domain}")
+                f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"unreg_bat_{domain}")
+                f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"unreg_bowl_{domain}")
+                
+                if domain != "Midweek":
+                    f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"unreg_starring_{domain}")
+                    f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"unreg_league_{domain}")
+                    f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"unreg_cup_{domain}")
+                else:
+                    f_starring = st.text_input("Men's Starring Master (Excel)", value=eng.DEFAULT_FILES["Men's"]["starring"], key="unreg_mw_starring")
+                    f_weekend_league = st.text_input("Weekend League Structure (Excel)", value=eng.DEFAULT_FILES["Men's"]["league"], key="unreg_wknd_league")
+                    f_midweek_league = st.text_input("Midweek League Structure (Excel)", value=c_files["league"], key="unreg_mw_league")
+
+        include_irish = False
+        if domain == "Men's":
+            include_irish = st.checkbox("Include Irish Competitions in Audit?", value=False, key="unreg_irish_check")
+            if include_irish:
+                with st.sidebar:
+                    with st.expander("📁 Irish File Path Configurations", expanded=False):
+                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="unreg_irish_bat")
+                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="unreg_irish_bowl")
+        
+        st.divider()
+        if st.button("📄 Run Engine & Generate Unregistered Report", type="primary"):
+            
+            # Require all the same data sets used in the normal Registration Checks tools
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            if domain != "Midweek":
+                files_to_check.extend([f_starring, f_league])
+                if domain == "Men's" and include_irish:
+                    files_to_check.extend([f_irish_bat, f_irish_bowl])
+            else:
+                files_to_check.extend([f_starring, f_weekend_league, f_midweek_league])
+                
+            missing_files = [f for f in files_to_check if f and not os.path.exists(f)]
+            
+            if missing_files:
+                st.error("Cannot find the following files:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
+            elif start_date > end_date:
+                st.error("Start Date cannot be after End Date.")
+            else:
+                with st.spinner("Running registration audit and compiling unregistered fines report..."):
+                    try:
+                        start_ts = pd.to_datetime(start_date)
+                        end_ts = pd.to_datetime(end_date)
+                        
+                        # 1. Run the appropriate audit engine to find violations automatically
+                        if domain != "Midweek":
+                            if domain == "Men's" and include_irish:
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup)
+                            else:
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup)
+                        else:
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl)
+                            
+                        # 2. Reset the buffer so pandas can read it
+                        audit_excel_io.seek(0)
+                        
+                        # 3. Pass the generated audit directly into the Unregistered Fines Generator
+                        doc_io = eng.generate_unregistered_fines_only(audit_excel_io)
+                        
+                        st.success("✅ Unregistered Fines report generated successfully!")
+                        st.download_button(
+                            label=f"📥 Download {domain} Unregistered Fines Report (Word)",
+                            data=doc_io.getvalue(),
+                            file_name=f"NCU_{domain.replace('''s''', '')}_Unreg_Fines_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    except Exception as e:
+                        st.error(f"An error occurred during processing: {str(e)}")

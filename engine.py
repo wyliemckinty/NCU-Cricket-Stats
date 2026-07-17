@@ -1173,6 +1173,30 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     reg_record = registered_players[(registered_players[reg_name_col].str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Saintfield', case=False, na=False))]
                 else: reg_record = pd.DataFrame()
                 match_type, matched_name = "Exact (Contextual Override)", "James Shannon"
+                
+            elif '(' in player and player.strip().endswith(')'):
+                base_name = player.split('(')[0].strip()
+                club_hint = player.split('(')[-1].replace(')', '').strip()
+                
+                # 1. Search for the base name
+                potential_matches = registered_players[registered_players[reg_name_col].str.strip().str.lower() == base_name.lower()]
+                if potential_matches.empty:
+                    best_match, score = process.extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
+                    if score >= 90:
+                        potential_matches = registered_players[registered_players[reg_name_col] == best_match]
+                
+                # 2. Filter by the club inside the brackets
+                if not potential_matches.empty:
+                    reg_record = potential_matches[potential_matches['Individual Membership Primary Club'].astype(str).str.contains(club_hint, case=False, na=False)]
+                    if not reg_record.empty:
+                        match_type, matched_name = f"Duplicate Match ({club_hint})", reg_record.iloc[0][reg_name_col]
+                    else:
+                        reg_record = pd.DataFrame()
+                        match_type, matched_name = "Failed", "NO MATCH FOUND"
+                else:
+                    reg_record = pd.DataFrame()
+                    match_type, matched_name = "Failed", "NO MATCH FOUND"
+                    
             else:
                 reg_record = registered_players[registered_players[reg_name_col].str.strip().str.lower() == player.lower()]
                 match_type, matched_name = "Exact", player
@@ -1474,6 +1498,28 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     reg_record = registered_players[(registered_players[reg_name_col].str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Saintfield', case=False, na=False))]
                 else: reg_record = pd.DataFrame()
                 match_type, matched_name = "Exact (Contextual Override)", "James Shannon"
+                
+            elif '(' in player and player.strip().endswith(')'):
+                base_name = player.split('(')[0].strip()
+                club_hint = player.split('(')[-1].replace(')', '').strip()
+                
+                potential_matches = registered_players[registered_players[reg_name_col].str.strip().str.lower() == base_name.lower()]
+                if potential_matches.empty:
+                    best_match, score = process.extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
+                    if score >= 90:
+                        potential_matches = registered_players[registered_players[reg_name_col] == best_match]
+                
+                if not potential_matches.empty:
+                    reg_record = potential_matches[potential_matches['Individual Membership Primary Club'].astype(str).str.contains(club_hint, case=False, na=False)]
+                    if not reg_record.empty:
+                        match_type, matched_name = f"Duplicate Match ({club_hint})", reg_record.iloc[0][reg_name_col]
+                    else:
+                        reg_record = pd.DataFrame()
+                        match_type, matched_name = "Failed", "NO MATCH FOUND"
+                else:
+                    reg_record = pd.DataFrame()
+                    match_type, matched_name = "Failed", "NO MATCH FOUND"
+                    
             else:
                 reg_record = registered_players[registered_players[reg_name_col].str.strip().str.lower() == player.lower()]
                 match_type, matched_name = "Exact", player
@@ -1938,9 +1984,6 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
         all_app['Parsed_Date'] = all_app['Group'].apply(report_parse_match_date)
         all_app.drop_duplicates(subset=['Official_Player', 'Group'], inplace=True)
 
-    # -------------------------------------------------------------
-    # NEW COMP MAP LOGIC: Identical to the main registration audit
-    # -------------------------------------------------------------
     f_league = DEFAULT_FILES[domain]["league"]
     league_dict, team_keys = {}, []
     if os.path.exists(f_league):
@@ -2203,3 +2246,464 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
             zip_file.writestr("Unregistered_Starred_Players.xlsx", unreg_io.getvalue())
 
     return zip_buffer
+
+# ==========================================
+# CLUB FINES GENERATOR FUNCTIONS
+# ==========================================
+def extract_base_club_name(team_name):
+    if pd.isna(team_name): return "Unknown Club"
+    t = str(team_name).strip()
+    t = re.sub(r'(?i)\b\d(?:st|nd|rd|th)?\s*XI\b', '', t)
+    t = re.sub(r'(?i)\b(?:1st|2nd|3rd|4th|5th|6th|7th)\b', '', t)
+    t = re.sub(r'(?i)\bWomen\'?s?\b', '', t)
+    t = re.sub(r'(?i)\bMW\d?\b', '', t)
+    t = re.sub(r'(?i)\bCricket Club\b|\bCC\b', '', t)
+    t = re.sub(r'\s+\d$', '', t.strip())
+    t = re.sub(r'\s+', ' ', t).strip()
+    return t if t else "Unknown Club"
+
+def format_fine_date(dt):
+    if pd.isna(dt) or dt is None: return "N/A"
+    day = dt.day
+    if 11 <= (day % 100) <= 13: suffix = 'th'
+    else: suffix = ['th', 'st', 'nd', 'rd', 'th'][min(day % 10, 4)]
+    month = dt.strftime('%B')
+    return f"{day}{suffix} {month}"
+
+def parse_flexible_date(date_str):
+    try:
+        if isinstance(date_str, datetime): return date_str
+        if pd.isna(date_str): return None
+        if hasattr(date_str, 'to_pydatetime'): return date_str.to_pydatetime()
+        match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+([A-Za-z]+)', str(date_str))
+        if match:
+            day, month_str = int(match.group(1)), match.group(2)
+            year = datetime.now().year if datetime.now().year >= 2026 else 2026
+            dt = pd.to_datetime(f"{day} {month_str} {year}", errors='coerce')
+            if pd.notna(dt): return dt.to_pydatetime()
+        dt = pd.to_datetime(str(date_str), errors='coerce', dayfirst=True)
+        if pd.notna(dt): return dt.to_pydatetime()
+    except: pass
+    return None
+
+def extract_competition_from_group(group_str):
+    if pd.isna(group_str) or not group_str: return ""
+    parts = str(group_str).split(' - ')
+    if len(parts) >= 3: return parts[1].strip()
+    elif len(parts) == 2:
+        if re.search(r'\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]+|\d{4}', parts[1]): return ""
+        return parts[1].strip()
+    return ""
+
+def generate_club_fines_report(audit_file, forfeit_file, start_date, end_date):
+    fines_data = []
+    
+    # Normalize the boundary dates to ensure clean comparisons
+    s_bound = pd.to_datetime(start_date).normalize()
+    e_bound = pd.to_datetime(end_date).normalize()
+
+    # 1. Parse Forfeited Matches Data
+    if forfeit_file:
+        try:
+            df_forfeit = pd.read_excel(forfeit_file)
+            for _, row in df_forfeit.iterrows():
+                date_raw = row.get('Date', '')
+                team_forfeit = str(row.get('Team Forfeiting', '')).strip()
+                team_against = str(row.get('Team against', '')).strip()
+                comp = str(row.get('Competition', '')).strip()
+                fine = row.get('Fine', 0)
+                
+                if team_forfeit.lower() == 'nan' or not team_forfeit: continue
+                try: fine = int(fine)
+                except: fine = 0
+                
+                club = extract_base_club_name(team_forfeit)
+                date_obj = parse_flexible_date(date_raw)
+                
+                # DATE FILTER LOGIC: Skip if outside the selected range
+                if date_obj:
+                    match_dt = pd.to_datetime(date_obj).normalize()
+                    if match_dt < s_bound or match_dt > e_bound:
+                        continue
+                else:
+                    continue
+                    
+                date_str = format_fine_date(date_obj) if date_obj else str(date_raw)
+                team_part_str = f"{team_forfeit} (v {team_against})"
+                
+                fines_data.append({
+                    'Club': club, 'Date_obj': date_obj, 'Date_str': date_str,
+                    'Reason': 'Unable to field a team', 'Player': None,
+                    'Team_Part_Str': team_part_str,
+                    'Competition': comp, 'Fine': fine, 'Type': 'Team'
+                })
+        except Exception: pass
+
+    # 2. Parse the output of the internal audit engine
+    if audit_file:
+        try:
+            excel_file = pd.ExcelFile(audit_file)
+            
+            # --- Pre-process to cross-reference common teams for unregistered players ---
+            df_unreg = pd.read_excel(audit_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
+            df_deemed = pd.read_excel(audit_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
+            
+            player_true_team = {}
+            if not df_unreg.empty:
+                # Combine their 1st occurrence with any subsequent matches they played
+                all_unreg_matches = pd.concat([df_unreg, df_deemed], ignore_index=True) if not df_deemed.empty else df_unreg
+                
+                if 'Stats Name (Cleaned)' in all_unreg_matches.columns:
+                    for player, group in all_unreg_matches.groupby('Stats Name (Cleaned)'):
+                        reg_club = str(group.iloc[0].get('Registered Club', 'Unknown Club')).strip()
+                        reg_club_base = extract_base_club_name(reg_club).lower()
+                        
+                        # 1. If we eventually know their registered club (e.g., they registered late)
+                        if reg_club_base != 'unknown club':
+                            player_true_team[player] = ('known_reg', reg_club)
+                        
+                        # 2. If the engine appended the club to their name via KNOWN_DUPLICATES
+                        elif '(' in player and player.strip().endswith(')'):
+                            club_in_name = player.split('(')[-1].replace(')', '').strip().lower()
+                            player_true_team[player] = ('inferred', club_in_name)
+                            
+                        # 3. Completely unregistered: look for common teams across matches
+                        else:
+                            teams_in_matches = []
+                            for _, r in group.iterrows():
+                                t_a = str(r.get('Team A', '')).strip()
+                                t_b = str(r.get('Team B', '')).strip()
+                                teams_in_matches.append({extract_base_club_name(t_a).lower(), extract_base_club_name(t_b).lower()})
+                            
+                            if len(teams_in_matches) == 1:
+                                t_a = str(group.iloc[0].get('Team A', '')).strip()
+                                t_b = str(group.iloc[0].get('Team B', '')).strip()
+                                player_true_team[player] = ('ambiguous', (t_a, t_b))
+                            else:
+                                common_teams = set.intersection(*teams_in_matches)
+                                if len(common_teams) == 1:
+                                    player_true_team[player] = ('inferred', list(common_teams)[0])
+                                else:
+                                    t_a = str(group.iloc[0].get('Team A', '')).strip()
+                                    t_b = str(group.iloc[0].get('Team B', '')).strip()
+                                    player_true_team[player] = ('ambiguous', (t_a, t_b))
+
+            # --- Extract Unregistered Player Fines ---
+            if not df_unreg.empty and len(df_unreg.columns) > 1:
+                for _, row in df_unreg.iterrows():
+                    match_date = row.get('Match Date')
+                    date_obj = pd.to_datetime(match_date) if pd.notna(match_date) else None
+                    date_str = format_fine_date(date_obj) if date_obj else str(match_date)
+                    
+                    player_key = str(row.get('Stats Name (Cleaned)', '')).strip()
+                    player_disp = str(row.get('Original Scorecard Name', player_key)).strip()
+                    
+                    team_a = str(row.get('Team A', '')).strip()
+                    team_b = str(row.get('Team B', '')).strip()
+                    comp = str(row.get('Match League', '')).strip()
+                    
+                    # Fetch the cross-referenced team status
+                    status, info = player_true_team.get(player_key, ('known_reg', str(row.get('Registered Club', 'Unknown Club')).strip()))
+                    
+                    if status == 'known_reg':
+                        reg_club_base = extract_base_club_name(info).lower()
+                        if reg_club_base in extract_base_club_name(team_b).lower() and reg_club_base != 'unknown club':
+                            team_played, opponent = team_b, team_a
+                        else:
+                            team_played, opponent = team_a, team_b
+                        club = extract_base_club_name(team_played)
+                        team_part_str = f"{team_played} (v {opponent})"
+                    
+                    elif status == 'inferred':
+                        if info in extract_base_club_name(team_b).lower():
+                            team_played, opponent = team_b, team_a
+                        else:
+                            team_played, opponent = team_a, team_b
+                        club = extract_base_club_name(team_played)
+                        team_part_str = f"{team_played} (v {opponent})"
+                        
+                    elif status == 'ambiguous':
+                        t_a, t_b = info
+                        club = f"{extract_base_club_name(t_a)} / {extract_base_club_name(t_b)}"
+                        team_part_str = f"{t_a} v {t_b}" 
+                        
+                    fines_data.append({
+                        'Club': club, 'Date_obj': date_obj, 'Date_str': date_str,
+                        'Reason': 'playing an unregistered player', 'Player': player_disp,
+                        'Team_Part_Str': team_part_str,
+                        'Competition': comp, 'Fine': 10, 'Type': 'Player'
+                    })
+                        
+            # --- Extract Starring Violation Fines ---
+            if "Starring Violations" in excel_file.sheet_names:
+                df_star = pd.read_excel(audit_file, sheet_name="Starring Violations")
+                if not df_star.empty and len(df_star.columns) > 1:
+                    for _, row in df_star.iterrows():
+                        match_date = row.get('Match Date')
+                        date_obj = pd.to_datetime(match_date) if pd.notna(match_date) else None
+                        date_str = format_fine_date(date_obj) if date_obj else str(match_date)
+                        
+                        player = str(row.get('Original Scorecard Name', row.get('Player (Cleaned)', ''))).strip()
+                        team_played = str(row.get('Actually Played For', row.get('Midweek Team', ''))).strip()
+                        team_a = str(row.get('Team A', '')).strip()
+                        team_b = str(row.get('Team B', '')).strip()
+                        
+                        opponent = team_b if team_played.lower() == team_a.lower() else team_a
+                        comp = extract_competition_from_group(str(row.get('Match Group', '')))
+                        club = extract_base_club_name(team_played)
+                        
+                        team_part_str = f"{team_played} (v {opponent})"
+                        
+                        fines_data.append({
+                            'Club': club, 'Date_obj': date_obj, 'Date_str': date_str,
+                            'Reason': 'playing a starred player', 'Player': player,
+                            'Team_Part_Str': team_part_str,
+                            'Competition': comp, 'Fine': 10, 'Type': 'Player'
+                        })
+        except Exception: pass
+
+    # Sort alphabetically by Club Name, then chronologically by Match Date
+    def sort_key(x):
+        d = x['Date_obj'] if pd.notna(x['Date_obj']) and x['Date_obj'] is not None else datetime.min
+        return (x['Club'].lower(), d)
+    
+    fines_data.sort(key=sort_key)
+    
+    from collections import defaultdict
+    fines_by_club = defaultdict(list)
+    for f in fines_data:
+        fines_by_club[f['Club']].append(f)
+        
+    doc = Document()
+    style_normal = doc.styles['Normal']
+    style_normal.font.name, style_normal.font.size = 'Calibri', Pt(11)
+    
+    p_title = doc.add_paragraph()
+    r_title = p_title.add_run("Club Fines Report")
+    r_title.bold = True
+    r_title.font.size = Pt(16)
+    
+    for club in sorted(fines_by_club.keys(), key=lambda c: c.lower()):
+        doc.add_paragraph() 
+        
+        p_club = doc.add_paragraph()
+        r_club = p_club.add_run(club)
+        r_club.bold = True
+        r_club.font.size = Pt(12)
+        
+        for f in fines_by_club[club]:
+            p_fine = doc.add_paragraph()
+            
+            date_part = f['Date_str']
+            reason_part = f['Reason']
+            player_part = f" - {f['Player']}" if f['Type'] == 'Player' else ""
+            team_part = f"{f['Team_Part_Str']}"
+            comp_part = f" – {f['Competition']}" if f['Competition'] and str(f['Competition']).lower() != 'nan' else ""
+            fine_part = f"Fine: £{f['Fine']}"
+            
+            r_date = p_fine.add_run(f"{date_part}")
+            r_date.bold = True
+            
+            text_str = f" – {reason_part}{player_part} - {team_part}{comp_part} - "
+            p_fine.add_run(text_str)
+            
+            r_fine = p_fine.add_run(fine_part)
+            r_fine.bold = True
+            
+            p_fine.paragraph_format.space_after = Pt(6)
+            
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    return doc_io
+    
+# ==========================================
+# UNREGISTERED ONLY FINES GENERATOR
+# ==========================================
+def generate_unregistered_fines_only(audit_file):
+    from collections import defaultdict
+    fines_data = []
+    
+    if audit_file:
+        try:
+            excel_file = pd.ExcelFile(audit_file)
+            
+            # --- Pre-process sheets ---
+            df_unreg = pd.read_excel(audit_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
+            df_deemed = pd.read_excel(audit_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
+            
+            # Map out each player's exact matched team layout (handling ambiguity/duplicates)
+            player_true_team = {}
+            player_deemed_matches = defaultdict(list)
+            
+            # 1. Compile a lookup dictionary of subsequent matches played by each player
+            if not df_deemed.empty and 'Stats Name (Cleaned)' in df_deemed.columns:
+                for _, r in df_deemed.iterrows():
+                    p_key = str(r.get('Stats Name (Cleaned)', '')).strip()
+                    m_date = r.get('Match Date')
+                    d_obj = pd.to_datetime(m_date) if pd.notna(m_date) else None
+                    d_str = format_fine_date(d_obj) if d_obj else str(m_date)
+                    t_a = str(r.get('Team A', '')).strip()
+                    t_b = str(r.get('Team B', '')).strip()
+                    comp = str(r.get('Match League', '')).strip()
+                    
+                    # Format subsequent match presentation string
+                    match_desc = f"{d_str} – Deemed Registered Match: {t_a} v {t_b} ({comp})"
+                    player_deemed_matches[p_key].append(match_desc)
+
+            if not df_unreg.empty:
+                all_unreg_matches = pd.concat([df_unreg, df_deemed], ignore_index=True) if not df_deemed.empty else df_unreg
+                
+                if 'Stats Name (Cleaned)' in all_unreg_matches.columns:
+                    for player, group in all_unreg_matches.groupby('Stats Name (Cleaned)'):
+                        reg_club = str(group.iloc[0].get('Registered Club', 'Unknown Club')).strip()
+                        reg_club_base = extract_base_club_name(reg_club).lower()
+                        
+                        if reg_club_base != 'unknown club':
+                            player_true_team[player] = ('known_reg', reg_club)
+                        elif '(' in player and player.strip().endswith(')'):
+                            club_in_name = player.split('(')[-1].replace(')', '').strip().lower()
+                            player_true_team[player] = ('inferred', club_in_name)
+                        else:
+                            teams_in_matches = []
+                            for _, r in group.iterrows():
+                                t_a = str(r.get('Team A', '')).strip()
+                                t_b = str(r.get('Team B', '')).strip()
+                                teams_in_matches.append({extract_base_club_name(t_a).lower(), extract_base_club_name(t_b).lower()})
+                            
+                            if len(teams_in_matches) == 1:
+                                t_a = str(group.iloc[0].get('Team A', '')).strip()
+                                t_b = str(group.iloc[0].get('Team B', '')).strip()
+                                player_true_team[player] = ('ambiguous', (t_a, t_b))
+                            else:
+                                common_teams = set.intersection(*teams_in_matches)
+                                if len(common_teams) == 1:
+                                    player_true_team[player] = ('inferred', list(common_teams)[0])
+                                else:
+                                    t_a = str(group.iloc[0].get('Team A', '')).strip()
+                                    t_b = str(group.iloc[0].get('Team B', '')).strip()
+                                    player_true_team[player] = ('ambiguous', (t_a, t_b))
+
+            # --- Extract Unregistered Player Fines ---
+            if not df_unreg.empty and len(df_unreg.columns) > 1:
+                for _, row in df_unreg.iterrows():
+                    match_date = row.get('Match Date')
+                    date_obj = pd.to_datetime(match_date) if pd.notna(match_date) else None
+                    date_str = format_fine_date(date_obj) if date_obj else str(match_date)
+                    
+                    player_key = str(row.get('Stats Name (Cleaned)', '')).strip()
+                    player_disp = str(row.get('Original Scorecard Name', player_key)).strip()
+                    
+                    team_a = str(row.get('Team A', '')).strip()
+                    team_b = str(row.get('Team B', '')).strip()
+                    comp = str(row.get('Match League', '')).strip()
+                    
+                    status, info = player_true_team.get(player_key, ('known_reg', str(row.get('Registered Club', 'Unknown Club')).strip()))
+                    
+                    if status == 'known_reg':
+                        reg_club_base = extract_base_club_name(info).lower()
+                        if reg_club_base in extract_base_club_name(team_b).lower() and reg_club_base != 'unknown club':
+                            team_played, opponent = team_b, team_a
+                        else:
+                            team_played, opponent = team_a, team_b
+                        club = extract_base_club_name(team_played)
+                        team_part_str = f"{team_played} (v {opponent})"
+                    
+                    elif status == 'inferred':
+                        if info in extract_base_club_name(team_b).lower():
+                            team_played, opponent = team_b, team_a
+                        else:
+                            team_played, opponent = team_a, team_b
+                        club = extract_base_club_name(team_played)
+                        team_part_str = f"{team_played} (v {opponent})"
+                        
+                    elif status == 'ambiguous':
+                        t_a, t_b = info
+                        club = f"{extract_base_club_name(t_a)} / {extract_base_club_name(t_b)}"
+                        team_part_str = f"{t_a} v {t_b}" 
+                    
+                    # Fetch compiled list of subsequent matches played
+                    subsequent_matches = player_deemed_matches.get(player_key, [])
+                        
+                    fines_data.append({
+                        'Club': club, 'Date_obj': date_obj, 'Date_str': date_str,
+                        'Reason': 'playing an unregistered player', 'Player': player_disp,
+                        'Team_Part_Str': team_part_str,
+                        'Competition': comp, 'Fine': 10, 'Type': 'Player',
+                        'Deemed_Matches': subsequent_matches
+                    })
+        except Exception as e: 
+            print(f"Error parsing audit file: {e}")
+
+    # Sort alphabetically by Club Name, then chronologically by Match Date
+    def sort_key(x):
+        d = x['Date_obj'] if pd.notna(x['Date_obj']) and x['Date_obj'] is not None else datetime.min
+        return (x['Club'].lower(), d)
+    
+    fines_data.sort(key=sort_key)
+    
+    fines_by_club = defaultdict(list)
+    for f in fines_data:
+        fines_by_club[f['Club']].append(f)
+        
+    doc = Document()
+    style_normal = doc.styles['Normal']
+    style_normal.font.name, style_normal.font.size = 'Calibri', Pt(11)
+    
+    p_title = doc.add_paragraph()
+    r_title = p_title.add_run("Unregistered Player Fines Report")
+    r_title.bold = True
+    r_title.font.size = Pt(16)
+    
+    for club in sorted(fines_by_club.keys(), key=lambda c: c.lower()):
+        doc.add_paragraph() 
+        
+        p_club = doc.add_paragraph()
+        r_club = p_club.add_run(club)
+        r_club.bold = True
+        r_club.font.size = Pt(12)
+        
+        for f in fines_by_club[club]:
+            p_fine = doc.add_paragraph()
+            
+            date_part = f['Date_str']
+            reason_part = f['Reason']
+            player_part = f" - {f['Player']}"
+            team_part = f"{f['Team_Part_Str']}"
+            comp_part = f" – {f['Competition']}" if f['Competition'] and str(f['Competition']).lower() != 'nan' else ""
+            fine_part = f"Fine: £{f['Fine']}"
+            
+            r_date = p_fine.add_run(f"{date_part}")
+            r_date.bold = True
+            
+            text_str = f" – {reason_part}{player_part} - {team_part}{comp_part} - "
+            p_fine.add_run(text_str)
+            
+            r_fine = p_fine.add_run(fine_part)
+            r_fine.bold = True
+            
+            # If the player went on to play more matches while unregistered, list them right below
+            if f['Deemed_Matches']:
+                p_fine.paragraph_format.space_after = Pt(2)
+                
+                p_info = doc.add_paragraph()
+                p_info.paragraph_format.left_indent = Pt(18)
+                p_info.paragraph_format.space_before = Pt(0)
+                p_info.paragraph_format.space_after = Pt(3)
+                r_info = p_info.add_run(f"→ Subsequent matches played while deemed registered ({len(f['Deemed_Matches'])}):")
+                r_info.font.italic = True
+                r_info.font.size = Pt(10)
+                
+                for sub_m in f['Deemed_Matches']:
+                    p_sub = doc.add_paragraph()
+                    p_sub.paragraph_format.left_indent = Pt(36)
+                    p_sub.paragraph_format.space_before = Pt(0)
+                    p_sub.paragraph_format.space_after = Pt(2)
+                    r_sub = p_sub.add_run(f"• {sub_m}")
+                    r_sub.font.size = Pt(10)
+                    r_sub.font.color.rgb = RGBColor(100, 100, 100)
+            else:
+                p_fine.paragraph_format.space_after = Pt(6)
+            
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    return doc_io
