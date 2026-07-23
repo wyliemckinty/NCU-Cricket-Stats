@@ -107,6 +107,23 @@ def build_alias_map(aliases, domain):
                 alias_map[alias_val] = official_val
                 
     return alias_map
+    
+def get_alias_used_for_player(official_name, search_input, alias_map):
+    """
+    If the search input was an alias mapped to official_name, 
+    return that alias string in original casing or title case.
+    """
+    if not search_input:
+        return None
+    
+    clean_search = search_input.strip().lower()
+    
+    # Check if search_input is a key in the alias_map pointing to official_name
+    mapped = alias_map.get(clean_search)
+    if mapped and mapped.lower() == official_name.lower() and clean_search != official_name.lower():
+        return search_input.strip().title()
+        
+    return None
 
 def cleanse_name(name, alias_map):
     original_name = str(name).replace('‡', '').strip()
@@ -143,29 +160,63 @@ def build_player_club_map(reg_players, alias_map, domain):
     club_map = {}
     if reg_players is None or reg_players.empty: return club_map
     
-    name_col = 'Full Name' if 'Full Name' in reg_players.columns else reg_players.columns[0]
-    reg_players[name_col] = reg_players[name_col].astype(str).str.replace('‡', '', regex=False).str.strip()
+    # 1. Forcefully compute the Full Name to guarantee exact matches
+    if 'First Name' in reg_players.columns and 'Last Name' in reg_players.columns:
+        reg_players['_computed_name'] = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Last Name'].astype(str).str.strip()
+    elif 'First Name' in reg_players.columns and 'Surname' in reg_players.columns:
+        reg_players['_computed_name'] = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Surname'].astype(str).str.strip()
+    elif 'Full Name' in reg_players.columns:
+        reg_players['_computed_name'] = reg_players['Full Name'].astype(str).str.replace('‡', '', regex=False).str.strip()
     
+    # Gather name columns to check
+    name_cols = []
+    if '_computed_name' in reg_players.columns:
+        name_cols.append('_computed_name')
+    name_cols.extend([c for c in reg_players.columns if 'name' in str(c).lower() and c != '_computed_name'])
+    
+    if not name_cols:
+        name_cols = [reg_players.columns[0]]
+        
+    # Women's Cara Murray override
     if domain == "Women's":
-        cara_murray = reg_players[reg_players[name_col].str.lower() == 'cara murray']
-        if not cara_murray.empty:
-            cara_waringstown = cara_murray.copy()
-            cara_waringstown['Individual Membership Primary Club'] = 'Waringstown Cricket Club'
-            reg_players = pd.concat([reg_players, cara_waringstown], ignore_index=True)
+        for c in name_cols:
+            cara_murray = reg_players[reg_players[c].astype(str).str.lower() == 'cara murray']
+            if not cara_murray.empty:
+                cara_waringstown = cara_murray.copy()
+                cara_waringstown['Individual Membership Primary Club'] = 'Waringstown Cricket Club'
+                reg_players = pd.concat([reg_players, cara_waringstown], ignore_index=True)
+                break
     
-    club_col = next((col for col in reg_players.columns if 'Primary Club' in str(col) and 'Wylie' not in str(col)), None)
-    if not club_col:
-        club_col = next((col for col in reg_players.columns if 'Club' in str(col)), None)
-                
-    if club_col:
-        for _, row in reg_players.iterrows():
-            raw_name = str(row[name_col]).strip()
-            club = str(row[club_col]).strip()
-            if raw_name.lower() != 'nan' and club.lower() != 'nan':
-                cleaned_name = cleanse_name(raw_name, alias_map)
-                club_map[cleaned_name.lower()] = club
-                club_map[raw_name.lower()] = club
-                
+    for _, r in reg_players.iterrows():
+        reg_club = None
+        
+        # STRICT TARGET: Explicitly look for the exact column name verified in the Registry
+        if 'Individual Membership Primary Club' in reg_players.columns and pd.notna(r['Individual Membership Primary Club']):
+            val = str(r['Individual Membership Primary Club']).strip()
+            if val.lower() != 'nan' and val != '':
+                reg_club = val
+        
+        # Fallback keyword scan if the exact column is missing
+        if not reg_club:
+            for keyword in ['Primary Club', 'Transfer', 'Wylie', 'Club']:
+                cols = [c for c in reg_players.columns if keyword in str(c)]
+                for col in cols:
+                    if pd.notna(r[col]) and str(r[col]).strip() and str(r[col]).lower() != 'nan':
+                        reg_club = str(r[col]).strip()
+                        break
+                if reg_club: break
+
+        # Map the found club to the player's name and alias variations
+        if reg_club:
+            for c in name_cols:
+                if pd.notna(r[c]):
+                    r_name = str(r[c]).replace('‡', '').strip().lower()
+                    norm_name = re.sub(r'\s+', ' ', r_name)
+                    if norm_name and norm_name != 'nan':
+                        mapped_name = alias_map.get(norm_name, norm_name)
+                        club_map[mapped_name] = reg_club
+                        club_map[norm_name] = reg_club
+                        
     return club_map
 
 def build_league_dict(league_structure):
@@ -567,7 +618,38 @@ def add_custom_heading(doc, text, level):
         run.font.name, run.font.size = 'Calibri', Pt(10)
     return p
 
-def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain):
+# ==========================================
+# ALIAS LOOKUP HELPERS
+# ==========================================
+def get_player_aliases(official_name, aliases):
+    """
+    Retrieves all known scorecard/match aliases mapped to an official registered name.
+    """
+    if aliases is None or aliases.empty:
+        return []
+    
+    clean_official = official_name.strip().lower()
+    found_aliases = []
+    
+    if 'Input Name (Scorecard/Stats)' in aliases.columns and 'Official Registered Name' in aliases.columns:
+        match_rows = aliases[aliases['Official Registered Name'].astype(str).str.strip().str.lower() == clean_official]
+        for val in match_rows['Input Name (Scorecard/Stats)'].dropna().unique():
+            cleaned_val = str(val).replace('‡', '').strip()
+            if cleaned_val and cleaned_val.lower() != clean_official and cleaned_val.lower() != 'nan':
+                if cleaned_val not in found_aliases:
+                    found_aliases.append(cleaned_val)
+    else:
+        for _, row in aliases.iterrows():
+            alias_val = str(row.iloc[0]).replace('‡', '').strip()
+            off_val = str(row.iloc[1]).replace('‡', '').strip()
+            if off_val.lower() == clean_official and alias_val.lower() != clean_official and alias_val.lower() != 'nan':
+                if alias_val not in found_aliases:
+                    found_aliases.append(alias_val)
+                    
+    return found_aliases
+
+
+def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain, aliases_list=None):
     club_name = "Unknown_Club"
     if active_player.lower() == 'neil brand' and domain != "Women's":
         club_name = 'Muckamore'
@@ -661,9 +743,18 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     
     header_club_name = re.sub(r'(?i)\s*cricket club', '', club_name_clean).strip()
     display_player_name = active_player.split(' (')[0].title()
-    add_custom_heading(doc, f"{display_player_name} - {header_club_name} - Season Summary\n", level=1)
+    
+    # Format dual-name header for Word File
+    if aliases_list:
+        alias_str = " / ".join(aliases_list)
+        heading_title = f"{display_player_name} (Registered Name) / {alias_str} (Match Name) - {header_club_name} - Season Summary\n"
+    else:
+        heading_title = f"{display_player_name} - {header_club_name} - Season Summary\n"
+        
+    add_custom_heading(doc, heading_title, level=1)
     
     add_custom_heading(doc, "Batting Statistics", level=2)
+
     batting_found = False
     for team in unique_teams:
         team_bat = player_batting[player_batting['Team'] == team] if not player_batting.empty else pd.DataFrame()

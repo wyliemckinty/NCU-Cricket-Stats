@@ -333,7 +333,7 @@ elif app_mode == "Player Word Doc Generator":
 
         with st.container(border=True):
             st.subheader("🔍 Search Player Database")
-            search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Jay Venus")
+            search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Pawan Thakur")
             
             col_btn, _ = st.columns([1, 4])
             with col_btn:
@@ -402,17 +402,47 @@ elif app_mode == "Player Word Doc Generator":
                         batting['Group'] = batting['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
                         bowling['Group'] = bowling['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
 
-                        search_term = alias_map.get(current_query.lower(), current_query)
-                        
-                        if search_term.lower() in ['callum weir', 'john weir']:
-                            matched_batting = batting[batting['Name'].astype(str).str.contains('Callum Weir|John Weir', case=False, na=False)]
-                            matched_bowling = bowling[bowling['Bowler'].astype(str).str.contains('Callum Weir|John Weir', case=False, na=False)]
-                        else:
-                            matched_batting = batting[batting['Name'].astype(str).str.contains(search_term, case=False, na=False)]
-                            matched_bowling = bowling[bowling['Bowler'].astype(str).str.contains(search_term, case=False, na=False)]
+                        clean_q = current_query.strip().lower()
 
-                        found_batters = matched_batting['Name'].dropna().unique().tolist()
-                        found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist()
+                        # 1. Search across Official Registry & Alias Master to find official target names
+                        target_official_names = set()
+
+                        # Check exact / substring matches in Aliases Master
+                        if 'Input Name (Scorecard/Stats)' in aliases.columns and 'Official Registered Name' in aliases.columns:
+                            alias_matches = aliases[
+                                aliases['Input Name (Scorecard/Stats)'].astype(str).str.contains(clean_q, case=False, na=False) |
+                                aliases['Official Registered Name'].astype(str).str.contains(clean_q, case=False, na=False)
+                            ]
+                            target_official_names.update(alias_matches['Official Registered Name'].dropna().astype(str).str.strip().tolist())
+                        else:
+                            for _, row in aliases.iterrows():
+                                a_val, o_val = str(row.iloc[0]), str(row.iloc[1])
+                                if clean_q in a_val.lower() or clean_q in o_val.lower():
+                                    target_official_names.add(o_val.strip())
+
+                        # Check exact / substring matches in Official Registry
+                        if 'Full Name' in reg_players.columns:
+                            reg_matches = reg_players[reg_players['Full Name'].astype(str).str.contains(clean_q, case=False, na=False)]
+                            target_official_names.update(reg_matches['Full Name'].dropna().astype(str).str.strip().tolist())
+
+                        # Check stats directly
+                        bat_direct = batting[batting['Name'].astype(str).str.contains(clean_q, case=False, na=False)]['Name'].unique().tolist()
+                        bowl_direct = bowling[bowling['Bowler'].astype(str).str.contains(clean_q, case=False, na=False)]['Bowler'].unique().tolist()
+                        target_official_names.update(bat_direct + bowl_direct)
+
+                        # 2. Filter stats by the collected target official names
+                        matched_batting_list = []
+                        matched_bowling_list = []
+                        
+                        for off_name in target_official_names:
+                            matched_batting_list.append(batting[batting['Name'].astype(str).str.contains(off_name, case=False, na=False)])
+                            matched_bowling_list.append(bowling[bowling['Bowler'].astype(str).str.contains(off_name, case=False, na=False)])
+
+                        matched_batting = pd.concat(matched_batting_list, ignore_index=True) if matched_batting_list else pd.DataFrame()
+                        matched_bowling = pd.concat(matched_bowling_list, ignore_index=True) if matched_bowling_list else pd.DataFrame()
+
+                        found_batters = matched_batting['Name'].dropna().unique().tolist() if not matched_batting.empty else []
+                        found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist() if not matched_bowling.empty else []
                         
                         raw_unique_players = list(set(found_batters + found_bowlers))
                         
@@ -434,6 +464,7 @@ elif app_mode == "Player Word Doc Generator":
                         st.session_state.matched_bowling = matched_bowling
                         st.session_state.unique_players = sorted(raw_unique_players, key=player_sort_key)
                         st.session_state.reg_players = reg_players
+                        st.session_state.aliases_df = aliases
                         st.session_state.player_club_map = player_club_map
                         st.session_state.data_loaded = True
 
@@ -441,17 +472,44 @@ elif app_mode == "Player Word Doc Generator":
                 matched_bowling = st.session_state.matched_bowling
                 unique_players = st.session_state.unique_players
                 reg_players = st.session_state.reg_players
+                aliases_df = st.session_state.aliases_df
 
                 if matched_batting.empty and matched_bowling.empty:
                     st.error(f"No statistics found for '{current_query}'. Please try another name.")
                 else:
+                    def get_club_for_player(name):
+                        if '(' in name and ')' in name:
+                            return name.split('(')[-1].replace(')', '').strip()
+                        club = st.session_state.player_club_map.get(name.lower(), None)
+                        if club and str(club).lower() not in ['nan', 'none', '', 'unknown club']:
+                            return str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
+                        return "Unknown Club"
+
+                    def format_player_display(name):
+                        pure_registered_name = name.split(' (')[0].strip()
+                        club_clean = get_club_for_player(name)
+                        
+                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                        
+                        if p_aliases:
+                            alias_str = " / ".join(p_aliases)
+                            return f"{pure_registered_name} / {alias_str} ({club_clean})"
+                        return f"{pure_registered_name} ({club_clean})"
+
                     if len(unique_players) == 1:
-                        st.success(f"Found Match: {unique_players[0]}")
                         active_player = unique_players[0]
+                        pure_registered_name = active_player.split(' (')[0].strip()
+                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                        
+                        display_lbl = format_player_display(active_player)
+                        st.success(f"Found Match: {display_lbl}")
+                        
                         p_bat = matched_batting[matched_batting['Name'] == active_player]
                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                         
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain)
+                        doc_io, filename = eng.generate_single_player_doc(
+                            active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases
+                        )
                         
                         st.download_button(
                             label="📥 Download Player Word Document",
@@ -465,47 +523,6 @@ elif app_mode == "Player Word Doc Generator":
                         
                         select_all = st.checkbox("Select all players")
                         
-                        def format_player_display(name):
-                            if '(' in name and ')' in name:
-                                return name
-                            
-                            import re
-                            p_bat = st.session_state.matched_batting[st.session_state.matched_batting['Name'] == name]
-                            p_bowl = st.session_state.matched_bowling[st.session_state.matched_bowling['Bowler'] == name]
-                            
-                            teams_found = []
-                            if 'Team' in p_bat.columns:
-                                teams_found.extend(p_bat['Team'].dropna().tolist())
-                            if 'Team' in p_bowl.columns:
-                                teams_found.extend(p_bowl['Team'].dropna().tolist())
-                                
-                            if teams_found:
-                                most_common_team = max(set(teams_found), key=teams_found.count)
-                                club_clean = str(most_common_team).replace(" Cricket Club", "").replace(" CC", "").strip()
-                                club_clean = re.sub(r'\s+\d(st|nd|rd|th)?\s*XI?$', '', club_clean, flags=re.IGNORECASE).strip()
-                                club_clean = re.sub(r'\s+\d$', '', club_clean).strip()
-                                return f"{name} ({club_clean})"
-
-                            all_groups = pd.concat([p_bat['Group'], p_bowl['Group']]).dropna().tolist()
-                            if all_groups:
-                                team_frequency = {}
-                                for grp in all_groups:
-                                    if ' v ' in grp:
-                                        t1, t2 = grp.split(' v ')[0].strip(), grp.split(' v ')[1].split(',')[0].strip()
-                                        team_frequency[t1] = team_frequency.get(t1, 0) + 1
-                                        team_frequency[t2] = team_frequency.get(t2, 0) + 1
-                                
-                                if team_frequency:
-                                    top_teams = sorted(team_frequency.items(), key=lambda x: x[1], reverse=True)
-                                    inferred_club = str(top_teams[0][0]).replace(" Cricket Club", "").replace(" CC", "").strip()
-                                    inferred_club = re.sub(r'\s+\d(st|nd|rd|th)?\s*XI?$', '', inferred_club, flags=re.IGNORECASE).strip()
-                                    inferred_club = re.sub(r'\s+\d$', '', inferred_club).strip()
-                                    return f"{name} ({inferred_club})"
-                            
-                            club = st.session_state.player_club_map.get(name.lower(), "Unknown Club")
-                            club_clean = str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
-                            return f"{name} ({club_clean})"
-                        
                         selected_players = st.multiselect(
                             "Select players:",
                             options=unique_players,
@@ -516,10 +533,15 @@ elif app_mode == "Player Word Doc Generator":
                         if selected_players:
                             if len(selected_players) == 1:
                                 active_player = selected_players[0]
+                                pure_registered_name = active_player.split(' (')[0].strip()
+                                p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                                
                                 p_bat = matched_batting[matched_batting['Name'] == active_player]
                                 p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                 
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain)
+                                doc_io, filename = eng.generate_single_player_doc(
+                                    active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases
+                                )
                                 
                                 st.download_button(
                                     label=f"📥 Download Report for {format_player_display(active_player)}",
@@ -533,10 +555,15 @@ elif app_mode == "Player Word Doc Generator":
                                 zip_buffer = io.BytesIO()
                                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                                     for active_player in selected_players:
+                                        pure_registered_name = active_player.split(' (')[0].strip()
+                                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                                        
                                         p_bat = matched_batting[matched_batting['Name'] == active_player]
                                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                         
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain)
+                                        doc_io, filename = eng.generate_single_player_doc(
+                                            active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases
+                                        )
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(
@@ -549,7 +576,7 @@ elif app_mode == "Player Word Doc Generator":
                                 )
                         else:
                             st.info("Please select at least one player to generate a report.")
-
+                            
 # ==========================================
 # TOOL 3: WEEKEND REGISTRATION CHECKS
 # ==========================================
