@@ -438,8 +438,16 @@ elif app_mode == "Player Word Doc Generator":
                             matched_batting_list.append(batting[batting['Name'].astype(str).str.contains(off_name, case=False, na=False)])
                             matched_bowling_list.append(bowling[bowling['Bowler'].astype(str).str.contains(off_name, case=False, na=False)])
 
-                        matched_batting = pd.concat(matched_batting_list, ignore_index=True) if matched_batting_list else pd.DataFrame()
-                        matched_bowling = pd.concat(matched_bowling_list, ignore_index=True) if matched_bowling_list else pd.DataFrame()
+                        # Concat without ignoring index to preserve original row IDs
+                        matched_batting = pd.concat(matched_batting_list) if matched_batting_list else pd.DataFrame()
+                        matched_bowling = pd.concat(matched_bowling_list) if matched_bowling_list else pd.DataFrame()
+
+                        # Deduplicate rows caught by multiple overlapping partial string matches
+                        if not matched_batting.empty:
+                            matched_batting = matched_batting[~matched_batting.index.duplicated(keep='first')].reset_index(drop=True)
+                            
+                        if not matched_bowling.empty:
+                            matched_bowling = matched_bowling[~matched_bowling.index.duplicated(keep='first')].reset_index(drop=True)
 
                         found_batters = matched_batting['Name'].dropna().unique().tolist() if not matched_batting.empty else []
                         found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist() if not matched_bowling.empty else []
