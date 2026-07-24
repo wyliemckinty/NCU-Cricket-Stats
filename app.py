@@ -164,6 +164,25 @@ if app_mode == "Bulk Averages Calculator":
     with colX: bat_sort_pref = st.selectbox("Batting Primary Sort", ["Runs", "Average", "Strike Rate"], index=0)
     with colY: bowl_sort_pref = st.selectbox("Bowling Primary Sort", ["Wickets", "Average", "Economy", "Strike Rate"], index=0)
 
+    # --- ADDED CODE: Match Inclusion & Threshold Settings ---
+    st.divider()
+    st.subheader("Match Inclusion & Threshold Settings")
+    colA, colB, colC = st.columns(3)
+    
+    include_cup = True
+    include_t20 = True
+    disable_thresholds = False
+    
+    with colA:
+        if domain in ["Men's", "Women's"]:
+            include_cup = st.checkbox("Include Cup Matches", value=True)
+    with colB:
+        if domain == "Men's":
+            include_t20 = st.checkbox("Include T20 Matches", value=True)
+    with colC:
+        disable_thresholds = st.checkbox("Set all target thresholds to 0", value=False)
+    # --------------------------------------------------------
+
     with st.sidebar:
         st.divider() 
         c_files = eng.DEFAULT_FILES[domain]
@@ -174,6 +193,7 @@ if app_mode == "Bulk Averages Calculator":
             f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"avg_league_{domain}")
             f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"avg_bat_{domain}")
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"avg_bowl_{domain}")
+            f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"avg_cup_{domain}")
     
     include_irish = False
     if domain == "Men's":
@@ -187,7 +207,7 @@ if app_mode == "Bulk Averages Calculator":
 
     st.subheader("Generate Averages")
     if st.button("🚀 Process Averages", type="primary"):
-        files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl]
+        files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl, f_cup]
         if domain == "Men's" and include_irish:
             files_to_check.extend([f_irish_bat, f_irish_bowl])
             
@@ -209,6 +229,83 @@ if app_mode == "Bulk Averages Calculator":
                             batting = pd.concat([batting, pd.read_excel(f_irish_bat)], ignore_index=True)
                         if os.path.exists(f_irish_bowl):
                             bowling = pd.concat([bowling, pd.read_excel(f_irish_bowl)], ignore_index=True)
+
+                    # --- ADDED CODE: Advanced Cup/T20 Filtering ---
+                    cup_match_dict = {}
+                    if os.path.exists(f_cup):
+                        try:
+                            excel_file_cup = pd.ExcelFile(f_cup)
+                            target_sheet = excel_file_cup.sheet_names[0]
+                            for sheet in excel_file_cup.sheet_names:
+                                if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
+                                    target_sheet = sheet
+                                    break
+                            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+                            
+                            def local_parse(group_str):
+                                try:
+                                    group_str = str(group_str).strip()
+                                    parts = group_str.rsplit(' - ', 1)
+                                    date_str = parts[1].strip() if len(parts) == 2 else group_str
+                                    rest = parts[0].strip() if len(parts) == 2 else group_str
+                                    match_date = pd.to_datetime(date_str, dayfirst=True, errors='coerce')
+                                    if pd.notna(match_date): match_date = match_date.normalize()
+                                    if ' v ' in rest:
+                                        team_a, remainder = rest.split(' v ', 1)
+                                        team_b = remainder.rsplit(', ', 1)[0] if ', ' in remainder else (remainder.rsplit(' - ', 1)[0] if ' - ' in remainder else remainder)
+                                    else:
+                                        team_a, team_b = rest, "Unknown"
+                                    return team_a.strip(), team_b.strip(), match_date
+                                except: return None, None, None
+
+                            for _, row_data in cup_df.iterrows():
+                                match_str_raw = str(row_data[0]).strip()
+                                cup_name = str(row_data[1]).strip()
+                                if match_str_raw.lower() in ['match string', 'match group', 'match', 'nan']: continue
+                                cleaned_match_str = eng.doc_format_cricket_names(match_str_raw, domain)
+                                c_team_a, c_team_b, c_date = local_parse(cleaned_match_str)
+                                if c_team_a and c_team_b:
+                                    teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
+                                    if pd.notna(c_date):
+                                        cup_match_dict[f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}"] = cup_name
+                                    else:
+                                        cup_match_dict[f"{teams[0]}_{teams[1]}"] = cup_name
+                        except Exception: pass
+
+                    def is_target_match(grp_str, target_kws):
+                        grp_str_clean = str(grp_str).lower()
+                        # 1. Literal substring match in the Group string
+                        if any(kw in grp_str_clean for kw in target_kws):
+                            return True
+                        # 2. Cross-reference NCU Cup Fixtures registry
+                        if cup_match_dict:
+                            c_team_a, c_team_b, c_date = local_parse(eng.doc_format_cricket_names(grp_str, domain))
+                            if c_team_a and c_team_b:
+                                teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
+                                comp = None
+                                if pd.notna(c_date):
+                                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}")
+                                if not comp:
+                                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}")
+                                if comp and any(kw in str(comp).lower() for kw in target_kws):
+                                    return True
+                        return False
+
+                    cup_kws = ['cup', 'trophy', 'shield', 'plate', 'bowl', 'vase', 'challenge']
+                    t20_kws = ['t20', 'twenty20']
+
+                    if domain in ["Men's", "Women's"] and not include_cup:
+                        if 'Group' in batting.columns:
+                            batting = batting[~batting['Group'].apply(lambda x: is_target_match(x, cup_kws))]
+                        if 'Group' in bowling.columns:
+                            bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, cup_kws))]
+                            
+                    if domain == "Men's" and not include_t20:
+                        if 'Group' in batting.columns:
+                            batting = batting[~batting['Group'].apply(lambda x: is_target_match(x, t20_kws))]
+                        if 'Group' in bowling.columns:
+                            bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, t20_kws))]
+                    # ------------------------------------------------------
 
                     alias_map = eng.build_alias_map(aliases, domain)
                     league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
@@ -259,6 +356,11 @@ if app_mode == "Bulk Averages Calculator":
                                     bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = t4_runs, t4_bmat, t4_wick, t4_mmat
                                 else:
                                     bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = t3_runs, t3_bmat, t3_wick, t3_mmat
+
+                            # --- ADDED CODE: Zero out thresholds ---
+                            if disable_thresholds:
+                                bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = 0, 0, 0, 0
+                            # ---------------------------------------
 
                             if not league_bat.empty:
                                 league_bat = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat['Matches'] >= bat_match_thresh)]
