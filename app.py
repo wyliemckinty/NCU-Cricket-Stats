@@ -36,23 +36,25 @@ PAGE_TITLES = {
     "unregistered_fines": "💸 Unregistered Player Fines Generator"
 }
 
+ALL_THRESHOLD_KEYS = {
+    # Men's Thresholds
+    "t1_runs": 200, "t1_bmat": 5, "t1_wick": 15, "t1_mmat": 5,
+    "t2_runs": 150, "t2_bmat": 5, "t2_wick": 10, "t2_mmat": 5,
+    "t3_runs": 100, "t3_bmat": 3, "t3_wick": 5,  "t3_mmat": 3,
+    "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
+    # Women's Thresholds
+    "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
+    "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
+    # Midweek Thresholds
+    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
+}
+
 # ==========================================
 # THRESHOLD PERSISTENCE & CALLBACK FUNCTIONS
 # ==========================================
 def load_threshold_settings():
     """Loads saved threshold values from disk or returns factory defaults."""
-    defaults = {
-        # Men's Thresholds
-        "t1_runs": 200, "t1_bmat": 5, "t1_wick": 15, "t1_mmat": 5,
-        "t2_runs": 150, "t2_bmat": 5, "t2_wick": 10, "t2_mmat": 5,
-        "t3_runs": 100, "t3_bmat": 3, "t3_wick": 5,  "t3_mmat": 3,
-        "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
-        # Women's Thresholds
-        "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
-        "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
-        # Midweek Thresholds
-        "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
-    }
+    defaults = dict(ALL_THRESHOLD_KEYS)
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r") as f:
@@ -62,55 +64,37 @@ def load_threshold_settings():
             pass
     return defaults
 
+def sync_threshold_state():
+    """Ensures threshold widget keys exist in session state even when unmounted across domain switches."""
+    if "threshold_master" not in st.session_state:
+        st.session_state["threshold_master"] = load_threshold_settings()
+
+    is_zero = st.session_state.get("disable_thresholds", False)
+
+    for k, default_val in ALL_THRESHOLD_KEYS.items():
+        if k not in st.session_state["threshold_master"]:
+            st.session_state["threshold_master"][k] = default_val
+
+        # If widget key was purged when switching domain views, restore it
+        if k not in st.session_state:
+            st.session_state[k] = 0 if is_zero else st.session_state["threshold_master"][k]
+        elif not is_zero:
+            # Sync active UI edits back to master storage
+            st.session_state["threshold_master"][k] = st.session_state[k]
+
 def save_threshold_settings():
     """Saves current threshold inputs from session state to a local JSON file."""
-    keys = [
-        "t1_runs", "t1_bmat", "t1_wick", "t1_mmat",
-        "t2_runs", "t2_bmat", "t2_wick", "t2_mmat",
-        "t3_runs", "t3_bmat", "t3_wick", "t3_mmat",
-        "t4_runs", "t4_bmat", "t4_wick", "t4_mmat",
-        "w1_runs", "w1_bmat", "w1_wick", "w1_mmat",
-        "w2_runs", "w2_bmat", "w2_wick", "w2_mmat",
-        "mw_min_runs", "mw_min_innings", "mw_min_wickets"
-    ]
-    data = {k: st.session_state[k] for k in keys if k in st.session_state}
+    sync_threshold_state()
+    data = dict(st.session_state.get("threshold_master", load_threshold_settings()))
     with open(CONFIG_FILE, "w") as f:
         json.dump(data, f, indent=4)
 
-# Initialize threshold session state keys on app startup
-if "thresholds_initialized" not in st.session_state:
-    saved_defaults = load_threshold_settings()
-    for k, v in saved_defaults.items():
-        st.session_state[k] = v
-    st.session_state["threshold_cache"] = dict(saved_defaults)
-    st.session_state["thresholds_initialized"] = True
-
 def toggle_zero_thresholds():
-    """Remembers custom threshold edits in session cache before setting inputs to 0."""
+    """Remembers custom threshold edits in master storage before setting inputs to 0."""
     is_zero = st.session_state.get("disable_thresholds", False)
-    threshold_keys = [
-        "t1_runs", "t1_bmat", "t1_wick", "t1_mmat",
-        "t2_runs", "t2_bmat", "t2_wick", "t2_mmat",
-        "t3_runs", "t3_bmat", "t3_wick", "t3_mmat",
-        "t4_runs", "t4_bmat", "t4_wick", "t4_mmat",
-        "w1_runs", "w1_bmat", "w1_wick", "w1_mmat",
-        "w2_runs", "w2_bmat", "w2_wick", "w2_mmat",
-        "mw_min_runs", "mw_min_innings", "mw_min_wickets"
-    ]
-    
-    if is_zero:
-        # Cache active custom values before zeroing
-        st.session_state["threshold_cache"] = {
-            k: st.session_state.get(k, 0) for k in threshold_keys
-        }
-        for k in threshold_keys:
-            st.session_state[k] = 0
-    else:
-        # Restore custom values from cache
-        cache = st.session_state.get("threshold_cache", load_threshold_settings())
-        for k in threshold_keys:
-            if k in cache:
-                st.session_state[k] = cache[k]
+    master = st.session_state.get("threshold_master", load_threshold_settings())
+    for k in ALL_THRESHOLD_KEYS:
+        st.session_state[k] = 0 if is_zero else master.get(k, ALL_THRESHOLD_KEYS[k])
 
 # ==========================================
 # PAGE CONFIGURATION & CUSTOM CSS STYLING
@@ -172,6 +156,8 @@ app_mode = st.sidebar.selectbox("Select Tool", [
 # TOOL 1: BULK AVERAGES
 # ==========================================
 if app_mode == "Bulk Averages Calculator":
+    sync_threshold_state()
+    
     st.title(PAGE_TITLES["bulk_averages"])
     st.markdown("Generate full season averages for Men's, Women's, or Midweek leagues.")
 
