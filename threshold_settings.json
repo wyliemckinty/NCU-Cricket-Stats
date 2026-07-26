@@ -1,6 +1,6 @@
 {
-    "t1_runs": 300,
-    "t1_bmat": 10,
+    "t1_runs": 200,
+    "t1_bmat": 5,
     "t1_wick": 15,
     "t1_mmat": 5,
     "t2_runs": 150,
