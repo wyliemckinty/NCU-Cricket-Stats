@@ -287,6 +287,8 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("*Verify or update the default local file paths below.*")
             f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"avg_reg_{domain}")
             f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"avg_alias_{domain}")
+            f_unreg = st.text_input("Unregistered Players Map", value=c_files.get("unreg", ""), key=f"avg_unreg_{domain}")
+            f_secondary = st.text_input("Secondary Team Map", value=c_files.get("secondary", ""), key=f"avg_sec_{domain}") 
             f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"avg_league_{domain}")
             f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"avg_bat_{domain}")
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"avg_bowl_{domain}")
@@ -401,14 +403,21 @@ if app_mode == "Bulk Averages Calculator":
                         if 'Group' in bowling.columns:
                             bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, t20_kws))]
 
+                    # Read the manual mapping files if they exist
+                    unreg_df = pd.read_excel(f_unreg) if os.path.exists(f_unreg) else None
+                    sec_df = pd.read_excel(f_secondary) if os.path.exists(f_secondary) else None
+                    
                     alias_map = eng.build_alias_map(aliases, domain)
+                    secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
+                    
                     league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
-                    player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
+                    player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
                     
-                    batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map), axis=1)
-                    bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map), axis=1)
+                    # Apply contextual name cleansing (Restored Lines)
+                    batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
+                    bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
                     
-                    batting_avgs, bowling_avgs = eng.calculate_averages(batting, bowling, player_club_map, team_keys, league_dict, domain, bat_sort_pref, bowl_sort_pref)
+                    batting_avgs, bowling_avgs = eng.calculate_averages(batting, bowling, player_club_map, team_keys, league_dict, domain, bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map)
                     
                     display_league_order = []
                     for raw_league in original_league_order:
@@ -606,8 +615,8 @@ elif app_mode == "Player Word Doc Generator":
                                         return f"{name} ({club})"
                             return name
                         
-                        batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map), axis=1)
-                        bowling['Bowler'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map), axis=1)
+                        batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
+                        bowling['Bowler'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
                         
                         batting['Name'] = batting.apply(lambda x: resolve_duplicates(x, 'Name'), axis=1)
                         bowling['Bowler'] = bowling.apply(lambda x: resolve_duplicates(x, 'Bowler'), axis=1)
