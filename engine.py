@@ -529,8 +529,8 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         grouped.rename(columns={'Team Played For': 'Team', 'Bowler': 'Player'}, inplace=True)
         grouped.drop(columns=['Cleaned Name'], inplace=True)
         
-        total_matches = bat_avgs[['League', 'Player', 'Matches']].rename(columns={'Matches': 'Total_Matches'})
-        grouped = grouped.merge(total_matches, on=['League', 'Player'], how='left')
+        total_matches = bat_avgs[['League', 'Player', 'Team', 'Matches']].rename(columns={'Matches': 'Total_Matches'})
+        grouped = grouped.merge(total_matches, on=['League', 'Player', 'Team'], how='left')
         grouped['Matches'] = grouped['Total_Matches'].fillna(grouped['Innings']).astype(int)
         grouped['Overs'] = (grouped['Balls'] // 6) + (grouped['Balls'] % 6) / 10
         grouped['Average'] = np.where(grouped['Wickets'] > 0, grouped['Runs'] / grouped['Wickets'], np.nan)
