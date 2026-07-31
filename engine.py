@@ -2903,3 +2903,266 @@ def generate_unregistered_fines_only(audit_file):
     doc_io = io.BytesIO()
     doc.save(doc_io)
     return doc_io
+    
+# ==========================================
+# MILSTONES ENGINE SPECIFIC FUNCTIONS
+# ==========================================
+def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup=None):
+    # Load raw data
+    reg_players = pd.read_excel(f_reg)
+    aliases = pd.read_excel(f_alias)
+    league_structure = pd.read_excel(f_league)
+    batting_df = pd.read_excel(f_bat)
+    bowling_df = pd.read_excel(f_bowl)
+    
+    # Setup mapping dictionaries
+    alias_map = build_alias_map(aliases, domain)
+    player_club_map = build_player_club_map(reg_players, alias_map, domain)
+    league_dict, team_keys, _ = build_league_dict(league_structure)
+    
+    # Dynamic Settings based on Domain
+    if domain == "Women's":
+        wicket_threshold = 5
+        leagues_order = [
+            "Mercury Women's Premier League",
+            "Mercury Women's Senior League",
+            "NCU Women's Junior League"
+        ]
+        main_batting_header = "WOMEN BATTING"
+        main_bowling_header = "WOMEN BOWLING"
+    else:
+        wicket_threshold = 6
+        leagues_order = [
+            "Mercury Premier League", 
+            "Mercury Senior League 1", 
+            "Mercury Senior League 2", 
+            "Mercury Senior League 3"
+        ]
+        main_batting_header = "OPEN BATTING"
+        main_bowling_header = "OPEN BOWLING"
+    
+    # ---------------------------------------------------------
+    # Cup Match Filtering Logic
+    # ---------------------------------------------------------
+    cup_match_dict = {}
+    if f_cup and os.path.exists(f_cup):
+        try:
+            excel_file_cup = pd.ExcelFile(f_cup)
+            target_sheet = excel_file_cup.sheet_names[0]
+            for sheet in excel_file_cup.sheet_names:
+                if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
+                    target_sheet = sheet
+                    break
+            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+            
+            def local_parse(group_str):
+                try:
+                    group_str = str(group_str).strip()
+                    parts = group_str.rsplit(' - ', 1)
+                    date_str = parts[1].strip() if len(parts) == 2 else group_str
+                    rest = parts[0].strip() if len(parts) == 2 else group_str
+                    match_date = pd.to_datetime(date_str, dayfirst=True, errors='coerce')
+                    if pd.notna(match_date): match_date = match_date.normalize()
+                    if ' v ' in rest:
+                        t_a, remainder = rest.split(' v ', 1)
+                        t_b = remainder.rsplit(', ', 1)[0] if ', ' in remainder else (remainder.rsplit(' - ', 1)[0] if ' - ' in remainder else remainder)
+                    else:
+                        t_a, t_b = rest, "Unknown"
+                    return t_a.strip(), t_b.strip(), match_date
+                except: return None, None, None
+
+            for _, row_data in cup_df.iterrows():
+                match_str_raw = str(row_data[0]).strip()
+                cup_name = str(row_data[1]).strip()
+                if match_str_raw.lower() in ['match string', 'match group', 'match', 'nan']: continue
+                cleaned_match_str = doc_format_cricket_names(match_str_raw, domain)
+                c_team_a, c_team_b, c_date = local_parse(cleaned_match_str)
+                if c_team_a and c_team_b:
+                    teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
+                    if pd.notna(c_date):
+                        cup_match_dict[f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}"] = cup_name
+                    else:
+                        cup_match_dict[f"{teams[0]}_{teams[1]}"] = cup_name
+        except Exception: pass
+        
+    def is_cup_match(grp_str):
+        grp_str_clean = str(grp_str).lower()
+        cup_kws = ['cup', 'trophy', 'shield', 'plate', 'bowl', 'vase', 'challenge', 't20', 'twenty20', 'gallagher', 'lvs']
+        
+        if any(kw in grp_str_clean for kw in cup_kws):
+            return True
+            
+        if cup_match_dict:
+            c_team_a, c_team_b, c_date = local_parse(doc_format_cricket_names(grp_str, domain))
+            if c_team_a and c_team_b:
+                teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
+                comp = None
+                if pd.notna(c_date):
+                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}")
+                if not comp:
+                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}")
+                if comp and any(kw in str(comp).lower() for kw in cup_kws):
+                    return True
+        return False
+    # ---------------------------------------------------------
+
+    def get_target_league(league_str):
+        if not league_str: return None
+        l_lower = str(league_str).lower()
+        
+        if domain == "Women's":
+            if 'premier' in l_lower: return "Mercury Women's Premier League"
+            elif 'senior' in l_lower: return "Mercury Women's Senior League"
+            elif 'junior' in l_lower: return "NCU Women's Junior League"
+            return None
+        else:
+            if 'premier' in l_lower: return "Mercury Premier League"
+            elif 'senior league 1' in l_lower or 'senior 1' in l_lower or 'section 1' in l_lower: return "Mercury Senior League 1"
+            elif 'senior league 2' in l_lower or 'senior 2' in l_lower or 'section 2' in l_lower: return "Mercury Senior League 2"
+            elif 'senior league 3' in l_lower or 'senior 3' in l_lower or 'section 3' in l_lower: return "Mercury Senior League 3"
+            return None
+        
+    def format_day_month(dt):
+        if pd.isna(dt): return "Unknown Date"
+        day = dt.day
+        if 11 <= (day % 100) <= 13: suffix = 'th'
+        else: suffix = ['th', 'st', 'nd', 'rd', 'th'][min(day % 10, 4)]
+        month = dt.strftime('%B')
+        return f"{day}{suffix} {month}"
+        
+    def process_milestone_row(row, is_batting):
+        scorecard_name = str(row['Name'] if is_batting else row['Bowler']).strip()
+        team_played = determine_player_team_for_row(row, player_club_map, domain)
+        grp = str(row['Group'])
+        t1, t2 = extract_teams_from_group(grp)
+        opponent = t2 if team_played == t1 else t1
+        
+        # Strip "Women's" and "Women", fix spacing, and enforce Holywood 1881
+        team_played_clean = re.sub(r'(?i)\bwomen\'?s?\b', '', team_played)
+        team_played_clean = re.sub(r'\s+', ' ', team_played_clean).strip()
+        if "Holywood" in team_played_clean and "1881" not in team_played_clean:
+            team_played_clean = team_played_clean.replace("Holywood", "Holywood 1881")
+            
+        opponent_clean = re.sub(r'(?i)\bwomen\'?s?\b', '', opponent)
+        opponent_clean = re.sub(r'\s+', ' ', opponent_clean).strip()
+        if "Holywood" in opponent_clean and "1881" not in opponent_clean:
+            opponent_clean = opponent_clean.replace("Holywood", "Holywood 1881")
+        
+        league = get_team_league(team_played, team_keys, league_dict, domain)
+        
+        try:
+            parts = grp.rsplit(' - ', 1)
+            date_str = parts[1].strip() if len(parts) == 2 else grp
+            clean_date_str = re.sub(r'(st|nd|rd|th)\b', '', date_str, flags=re.IGNORECASE)
+            match_date = pd.to_datetime(clean_date_str, dayfirst=True, errors='coerce')
+            date_formatted = format_day_month(match_date) if pd.notna(match_date) else date_str
+        except:
+            match_date = pd.Timestamp.min
+            date_formatted = "Unknown Date"
+            
+        return scorecard_name, team_played_clean, opponent_clean, league, date_formatted, match_date
+
+    # Aggressively filter out cup matches BEFORE processing
+    batting_df = batting_df[~batting_df['Group'].apply(is_cup_match)]
+    bowling_df = bowling_df[~bowling_df['Group'].apply(is_cup_match)]
+
+    # Background contextual mapping to accurately fetch Teams and Leagues
+    batting_df['Cleaned Name'] = batting_df.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
+    bowling_df['Cleaned Name'] = bowling_df.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+    
+    batting_df['Runs'] = pd.to_numeric(batting_df['Runs'], errors='coerce').fillna(0)
+    bowling_df['Wickets'] = pd.to_numeric(bowling_df['Wickets'], errors='coerce').fillna(0)
+    
+    # Filter datasets based on exact threshold rules
+    centurions = batting_df[batting_df['Runs'] >= 100]
+    top_wickets = bowling_df[bowling_df['Wickets'] >= wicket_threshold]
+    
+    batting_results = {l: [] for l in leagues_order}
+    bowling_results = {l: [] for l in leagues_order}
+    
+    for _, row in centurions.iterrows():
+        scorecard_name, team_played, opponent, raw_league, date_fmt, dt_obj = process_milestone_row(row, is_batting=True)
+        target_league = get_target_league(raw_league)
+        
+        if target_league in batting_results:
+            runs = int(row['Runs'])
+            
+            is_not_out = False
+            if 'Not Outs' in row and pd.to_numeric(row['Not Outs'], errors='coerce') > 0:
+                is_not_out = True
+            elif 'High Score' in row and '*' in str(row['High Score']):
+                is_not_out = True
+                
+            runs_str = f"{runs}*" if is_not_out else str(runs)
+            line = f"{scorecard_name} ({team_played}) - {runs_str} vs {opponent} on {date_fmt}"
+            batting_results[target_league].append({'line': line, 'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min})
+            
+    for _, row in top_wickets.iterrows():
+        scorecard_name, team_played, opponent, raw_league, date_fmt, dt_obj = process_milestone_row(row, is_batting=False)
+        target_league = get_target_league(raw_league)
+        
+        if target_league in bowling_results:
+            wicks = int(row['Wickets'])
+            runs_conc = int(row['Runs']) if pd.notna(row['Runs']) else 0
+            line = f"{scorecard_name} ({team_played}) - {wicks}-{runs_conc} vs {opponent} on {date_fmt}"
+            bowling_results[target_league].append({'line': line, 'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min})
+            
+    # Generate Formatted Word Document
+    doc = Document()
+    
+    # Force default paragraph spacing based on the exact settings provided
+    style = doc.styles['Normal']
+    style.paragraph_format.space_before = Pt(0)
+    style.paragraph_format.space_after = Pt(0)
+    style.paragraph_format.line_spacing = 1.0
+    
+    # BATTING SECTION
+    p_open_bat = doc.add_paragraph()
+    r_open_bat = p_open_bat.add_run(main_batting_header)
+    r_open_bat.bold = True
+    doc.add_paragraph("") # Extra line space after main header
+    
+    for league in leagues_order:
+        p_league = doc.add_paragraph()
+        r_league = p_league.add_run(f"{league} - Centurions")
+        r_league.bold = True
+        doc.add_paragraph("-" * 52)
+        
+        matches = batting_results[league]
+        if matches:
+            matches.sort(key=lambda x: x['date'])
+            for m in matches:
+                doc.add_paragraph(m['line'])
+        else:
+            doc.add_paragraph("None")
+            
+        doc.add_paragraph("") # Extra line space
+            
+    doc.add_paragraph("-" * 102)
+    
+    # BOWLING SECTION
+    p_open_bowl = doc.add_paragraph()
+    r_open_bowl = p_open_bowl.add_run(main_bowling_header)
+    r_open_bowl.bold = True
+    doc.add_paragraph("") # Extra line space after main header
+    
+    for league in leagues_order:
+        p_league = doc.add_paragraph()
+        r_league = p_league.add_run(f"{league} - {wicket_threshold} wickets or more")
+        r_league.bold = True
+        doc.add_paragraph("-" * 61)
+        
+        matches = bowling_results[league]
+        if matches:
+            matches.sort(key=lambda x: x['date'])
+            for m in matches:
+                doc.add_paragraph(m['line'])
+        else:
+            doc.add_paragraph("None")
+            
+        doc.add_paragraph("") # Extra line space
+            
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    
+    return doc_io

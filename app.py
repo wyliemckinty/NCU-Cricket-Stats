@@ -33,7 +33,8 @@ PAGE_TITLES = {
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
     "starring_reports": "🚨 Club Starring & Inactivity Exporter",
     "fines_generator": "💸 Club Fines Generator",
-    "unregistered_fines": "💸 Unregistered Player Fines Generator"
+    "unregistered_fines": "💸 Unregistered Player Fines Generator",
+    "milestones_report": "🏆 League Milestones Report"
 }
 
 DEFAULT_THRESHOLDS = {
@@ -157,16 +158,28 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-st.sidebar.title("🏏 NCU Cricket Hub")
-app_mode = st.sidebar.selectbox("Select Tool", [
-    "Bulk Averages Calculator", 
-    "Player Word Doc Generator", 
-    "Registration Checks",
-    "Midweek Registration & Starring Check",
-    "Starring & Inactivity Reports",
-    "Club Fines Generator",
-    "Unregistered Player Fines Generator"
-])
+
+# ==========================================
+# SIDEBAR NAVIGATION (Radio Button Layout)
+# ==========================================
+with st.sidebar:
+    st.title("🏏 NCU Cricket Hub")
+    st.header("🛠️ Navigation")
+    
+    app_mode = st.radio(
+        "Choose a module to run:",
+        [
+            "Bulk Averages Calculator", 
+            "Player Word Doc Generator", 
+            "Registration Checks",
+            "Midweek Registration & Starring Check",
+            "Starring & Inactivity Reports",
+            "Club Fines Generator",
+            "Unregistered Player Fines Generator",
+            "League Milestones Report"
+        ]
+    )
+    st.divider()
 
 # ==========================================
 # TOOL 1: BULK AVERAGES
@@ -1296,3 +1309,54 @@ elif app_mode == "Unregistered Player Fines Generator":
                         )
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
+                        
+# ==========================================
+# TOOL 8: LEAGUE MILESTONES REPORT
+# ==========================================
+elif app_mode == "League Milestones Report":
+    st.title(PAGE_TITLES["milestones_report"])
+    st.markdown("Generate a formatted Word document reporting all Centurions (100+ runs) and top Wicket hauls exclusively for the top 4 Mercury leagues.")
+    
+    if not DOCX_AVAILABLE:
+        st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
+    else:
+        st.subheader("Select League Domain")
+        domain = st.radio("Choose the dataset domain:", ["Men's", "Women's"], horizontal=True)
+
+        with st.sidebar:
+            st.divider() 
+            c_files = eng.DEFAULT_FILES[domain]
+            with st.expander("📁 File Path Configurations", expanded=False):
+                st.markdown("*Verify or update the default local file paths below.*")
+                f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"ms_reg_{domain}")
+                f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"ms_alias_{domain}")
+                f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"ms_league_{domain}")
+                f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"ms_bat_{domain}")
+                f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"ms_bowl_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"ms_cup_{domain}")
+        
+        st.divider()
+        if st.button("📄 Generate Milestones Word Doc", type="primary"):
+            files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl]
+            missing_files = [f for f in files_to_check if not os.path.exists(f)]
+            
+            if missing_files:
+                st.error("Cannot find the following files:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
+            else:
+                with st.spinner("Extracting milestones, stripping cup matches, and building Word document..."):
+                    try:
+                        doc_io = eng.generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup)
+                        
+                        # Determine filename label based on domain
+                        domain_label = "Open" if domain == "Men's" else "Women"
+                        
+                        st.success("✅ Milestones report generated successfully!")
+                        st.download_button(
+                            label="📥 Download Milestones Report",
+                            data=doc_io.getvalue(),
+                            file_name=f"Mercury_{domain_label}_Milestones_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
+                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                            type="primary"
+                        )
+                    except Exception as e:
+                        st.error(f"An error occurred: {str(e)}")
