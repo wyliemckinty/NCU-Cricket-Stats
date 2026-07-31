@@ -281,12 +281,12 @@ if app_mode == "Bulk Averages Calculator":
     
     with colA:
         if domain in ["Men's", "Women's"]:
-            include_cup = st.checkbox("Include Cup Matches", value=True)
+            include_cup = st.toggle("Include Cup Matches", value=True)
     with colB:
         if domain == "Men's":
-            include_t20 = st.checkbox("Include T20 Matches", value=True)
+            include_t20 = st.toggle("Include T20 Matches", value=True)
     with colC:
-        disable_thresholds = st.checkbox(
+        disable_thresholds = st.toggle(
             "Set all target thresholds to 0", 
             value=False, 
             key="disable_thresholds", 
@@ -309,7 +309,7 @@ if app_mode == "Bulk Averages Calculator":
     
     include_irish = False
     if domain == "Men's":
-        include_irish = st.checkbox("Include Irish Competitions in Averages?", value=False)
+        include_irish = st.toggle("Include Irish Competitions in Averages?", value=False)
         
     if domain == "Men's" and include_irish:
         with st.sidebar:
@@ -555,7 +555,7 @@ elif app_mode == "Player Word Doc Generator":
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.checkbox("Include Irish Competitions in Player Report?", value=False)
+            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=False)
             
         if domain == "Men's" and include_irish:
             with st.sidebar:
@@ -757,7 +757,7 @@ elif app_mode == "Player Word Doc Generator":
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players you want to generate reports for.")
                         
-                        select_all = st.checkbox("Select all players")
+                        select_all = st.toggle("Select all players")
                         
                         selected_players = st.multiselect(
                             "Select players:",
@@ -847,7 +847,7 @@ elif app_mode == "Registration Checks":
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.checkbox("Include Irish Competitions in Audit?", value=False)
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False)
             
         if domain == "Men's" and include_irish:
             with st.sidebar:
@@ -1045,7 +1045,7 @@ elif app_mode == "Starring & Inactivity Reports":
 
     include_irish = False
     if domain == "Men's":
-        include_irish = st.checkbox("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
+        include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
 
     with st.sidebar:
         st.divider() 
@@ -1152,7 +1152,7 @@ elif app_mode == "Club Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.checkbox("Include Irish Competitions in Audit?", value=False, key="fines_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="fines_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -1166,7 +1166,7 @@ elif app_mode == "Club Fines Generator":
         col1, col2 = st.columns([1, 2])
         with col1:
             default_forfeit_path = "Team Fines for forfeiting matches 2026.xlsx"
-            use_default_forfeit = st.checkbox(f"Use local '{default_forfeit_path}'", value=os.path.exists(default_forfeit_path))
+            use_default_forfeit = st.toggle(f"Use local '{default_forfeit_path}'", value=os.path.exists(default_forfeit_path))
         with col2:
             f_forfeit = st.file_uploader("Or Upload Forfeits Excel File", type=["xlsx"], key="fines_forfeit_upload")
 
@@ -1257,7 +1257,7 @@ elif app_mode == "Unregistered Player Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.checkbox("Include Irish Competitions in Audit?", value=False, key="unreg_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="unreg_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
