@@ -792,7 +792,7 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             parts = str(grp_str).rsplit(' - ', 1)
             if len(parts) == 2:
                 d_str = parts[1].strip()
-                d_str = re.sub(r'(st|nd|rd|th)\b', '', d_str, flags=re.IGNORECASE)
+                d_str = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', d_str, flags=re.IGNORECASE)
                 dt = pd.to_datetime(d_str, dayfirst=True, errors='coerce')
                 if pd.notna(dt): return dt
         except: pass
@@ -2923,23 +2923,26 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
     # Dynamic Settings based on Domain
     if domain == "Women's":
         wicket_threshold = 5
-        leagues_order = [
-            "Mercury Women's Premier League",
-            "Mercury Women's Senior League",
-            "NCU Women's Junior League"
+        batting_leagues_order = [
+            "Mercury Women's Premier League"
         ]
-        main_batting_header = "WOMEN BATTING"
-        main_bowling_header = "WOMEN BOWLING"
+        bowling_leagues_order = [
+            "Mercury Women's Premier League",
+            "Mercury Women's Senior League"
+        ]
+        main_batting_header = "WOMEN BATTING - CENTURIONS"
+        main_bowling_header = f"WOMEN BOWLING - {wicket_threshold} WICKETS OR MORE"
     else:
         wicket_threshold = 6
-        leagues_order = [
+        batting_leagues_order = [
             "Mercury Premier League", 
             "Mercury Senior League 1", 
             "Mercury Senior League 2", 
             "Mercury Senior League 3"
         ]
-        main_batting_header = "OPEN BATTING"
-        main_bowling_header = "OPEN BOWLING"
+        bowling_leagues_order = list(batting_leagues_order)
+        main_batting_header = "OPEN BATTING - CENTURIONS"
+        main_bowling_header = f"OPEN BOWLING - {wicket_threshold} WICKETS OR MORE"
     
     # ---------------------------------------------------------
     # Cup Match Filtering Logic
@@ -3013,7 +3016,6 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
         if domain == "Women's":
             if 'premier' in l_lower: return "Mercury Women's Premier League"
             elif 'senior' in l_lower: return "Mercury Women's Senior League"
-            elif 'junior' in l_lower: return "NCU Women's Junior League"
             return None
         else:
             if 'premier' in l_lower: return "Mercury Premier League"
@@ -3053,7 +3055,7 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
         try:
             parts = grp.rsplit(' - ', 1)
             date_str = parts[1].strip() if len(parts) == 2 else grp
-            clean_date_str = re.sub(r'(st|nd|rd|th)\b', '', date_str, flags=re.IGNORECASE)
+            clean_date_str = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', date_str, flags=re.IGNORECASE)            
             match_date = pd.to_datetime(clean_date_str, dayfirst=True, errors='coerce')
             date_formatted = format_day_month(match_date) if pd.notna(match_date) else date_str
         except:
@@ -3077,8 +3079,8 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
     centurions = batting_df[batting_df['Runs'] >= 100]
     top_wickets = bowling_df[bowling_df['Wickets'] >= wicket_threshold]
     
-    batting_results = {l: [] for l in leagues_order}
-    bowling_results = {l: [] for l in leagues_order}
+    batting_results = {l: [] for l in batting_leagues_order}
+    bowling_results = {l: [] for l in bowling_leagues_order}
     
     for _, row in centurions.iterrows():
         scorecard_name, team_played, opponent, raw_league, date_fmt, dt_obj = process_milestone_row(row, is_batting=True)
@@ -3095,8 +3097,19 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
                 
             runs_str = f"{runs}*" if is_not_out else str(runs)
             line = f"{scorecard_name} ({team_played}) - {runs_str} vs {opponent} on {date_fmt}"
-            batting_results[target_league].append({'line': line, 'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min})
             
+            # --- Parse Surname and First Name for secondary sorting ---
+            name_parts = scorecard_name.strip().split()
+            surname = name_parts[-1].lower() if len(name_parts) > 1 else (name_parts[0].lower() if name_parts else "")
+            firstname = " ".join(name_parts[:-1]).lower() if len(name_parts) > 1 else ""
+
+            batting_results[target_league].append({
+                'line': line, 
+                'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min,
+                'surname': surname,
+                'firstname': firstname
+            })
+
     for _, row in top_wickets.iterrows():
         scorecard_name, team_played, opponent, raw_league, date_fmt, dt_obj = process_milestone_row(row, is_batting=False)
         target_league = get_target_league(raw_league)
@@ -3105,62 +3118,121 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
             wicks = int(row['Wickets'])
             runs_conc = int(row['Runs']) if pd.notna(row['Runs']) else 0
             line = f"{scorecard_name} ({team_played}) - {wicks}-{runs_conc} vs {opponent} on {date_fmt}"
-            bowling_results[target_league].append({'line': line, 'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min})
             
-    # Generate Formatted Word Document
+            # --- Parse Surname and First Name for secondary sorting ---
+            name_parts = scorecard_name.strip().split()
+            surname = name_parts[-1].lower() if len(name_parts) > 1 else (name_parts[0].lower() if name_parts else "")
+            firstname = " ".join(name_parts[:-1]).lower() if len(name_parts) > 1 else ""
+
+            bowling_results[target_league].append({
+                'line': line, 
+                'date': dt_obj if pd.notna(dt_obj) else pd.Timestamp.min,
+                'surname': surname,
+                'firstname': firstname
+            })
+            
+    # =========================================================
+    # GENERATE FORMATTED WORD DOCUMENT
+    # =========================================================
     doc = Document()
     
-    # Force default paragraph spacing based on the exact settings provided
+    # Force default paragraph spacing
     style = doc.styles['Normal']
     style.paragraph_format.space_before = Pt(0)
     style.paragraph_format.space_after = Pt(0)
     style.paragraph_format.line_spacing = 1.0
     
+    # ---------------------------------------------------------
     # BATTING SECTION
+    # ---------------------------------------------------------
     p_open_bat = doc.add_paragraph()
     r_open_bat = p_open_bat.add_run(main_batting_header)
     r_open_bat.bold = True
-    doc.add_paragraph("") # Extra line space after main header
+    doc.add_paragraph("")  # Gap after main section header
     
-    for league in leagues_order:
+    # Iterate over batting_leagues_order
+    for idx, league in enumerate(batting_leagues_order):
         p_league = doc.add_paragraph()
-        r_league = p_league.add_run(f"{league} - Centurions")
-        r_league.bold = True
-        doc.add_paragraph("-" * 52)
+        p_league.paragraph_format.space_after = Pt(0)
         
+        # Force explicit gap above League 2, 3, 4
+        if idx > 0:
+            p_league.paragraph_format.space_before = Pt(16)
+        else:
+            p_league.paragraph_format.space_before = Pt(0)
+            
+        r_league = p_league.add_run(league)
+        r_league.bold = True
+        
+        # Dash underline (scaled 1.5x to match proportional letter widths)
+        p_dash = doc.add_paragraph("–" * int(len(league) * 1.1))
+        p_dash.paragraph_format.space_before = Pt(0)
+        p_dash.paragraph_format.space_after = Pt(2)
+
         matches = batting_results[league]
         if matches:
-            matches.sort(key=lambda x: x['date'])
+            matches.sort(key=lambda x: (x['date'], x['surname'], x['firstname']))
+            last_date = None
             for m in matches:
-                doc.add_paragraph(m['line'])
+                p = doc.add_paragraph(m['line'])
+                if last_date is not None and m['date'] != last_date:
+                    p.paragraph_format.space_before = Pt(4)  # 4pt gap between different dates
+                else:
+                    p.paragraph_format.space_before = Pt(0)
+                last_date = m['date']
         else:
-            doc.add_paragraph("None")
+            p_none = doc.add_paragraph("None")
+            p_none.paragraph_format.space_before = Pt(0)
             
-        doc.add_paragraph("") # Extra line space
-            
-    doc.add_paragraph("-" * 102)
-    
+    # ---------------------------------------------------------
     # BOWLING SECTION
-    p_open_bowl = doc.add_paragraph()
+    # ---------------------------------------------------------
+    if domain == "Women's":
+        # Keep on same page, create paragraph with 24pt gap
+        p_open_bowl = doc.add_paragraph()
+        p_open_bowl.paragraph_format.space_before = Pt(24)
+    else:
+        # Break to new page FIRST, then create the header paragraph
+        doc.add_page_break()
+        p_open_bowl = doc.add_paragraph()
+
     r_open_bowl = p_open_bowl.add_run(main_bowling_header)
     r_open_bowl.bold = True
-    doc.add_paragraph("") # Extra line space after main header
+    doc.add_paragraph("")  # Gap after main section header
     
-    for league in leagues_order:
+    # Iterate over bowling_leagues_order
+    for idx, league in enumerate(bowling_leagues_order):
         p_league = doc.add_paragraph()
-        r_league = p_league.add_run(f"{league} - {wicket_threshold} wickets or more")
+        p_league.paragraph_format.space_after = Pt(0)
+        
+        # Force explicit gap above League 2, 3, 4
+        if idx > 0:
+            p_league.paragraph_format.space_before = Pt(16)
+        else:
+            p_league.paragraph_format.space_before = Pt(0)
+            
+        r_league = p_league.add_run(league)
         r_league.bold = True
-        doc.add_paragraph("-" * 61)
+        
+        # Dash underline (scaled 1.5x to match proportional letter widths)
+        p_dash = doc.add_paragraph("–" * int(len(league) * 1.1))
+        p_dash.paragraph_format.space_before = Pt(0)
+        p_dash.paragraph_format.space_after = Pt(2)
         
         matches = bowling_results[league]
         if matches:
-            matches.sort(key=lambda x: x['date'])
+            matches.sort(key=lambda x: (x['date'], x['surname'], x['firstname']))
+            last_date = None
             for m in matches:
-                doc.add_paragraph(m['line'])
+                p = doc.add_paragraph(m['line'])
+                if last_date is not None and m['date'] != last_date:
+                    p.paragraph_format.space_before = Pt(4)  # 4pt gap between different dates
+                else:
+                    p.paragraph_format.space_before = Pt(0)
+                last_date = m['date']
         else:
-            doc.add_paragraph("None")
-            
-        doc.add_paragraph("") # Extra line space
+            p_none = doc.add_paragraph("None")
+            p_none.paragraph_format.space_before = Pt(0)
             
     doc_io = io.BytesIO()
     doc.save(doc_io)
