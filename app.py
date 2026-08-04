@@ -21,6 +21,39 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
+# STREAMLIT CACHED EXCEL LOADER
+# ==========================================
+@st.cache_data(show_spinner="Loading spreadsheet...")
+def cached_read_excel(filepath, mtime):
+    """Cached wrapper around pd.read_excel to speed up UI operations.
+    The 'mtime' parameter acts as a cache-buster whenever the file on disk changes.
+    """
+    if not os.path.exists(filepath):
+        return pd.DataFrame()
+    return pd.read_excel(filepath)
+
+@st.cache_data(show_spinner="Loading sheet...")
+def cached_read_excel_sheet(filepath, mtime, sheet_name=None, header='infer'):
+    """Cached wrapper around pd.read_excel supporting sheet_name and header configurations."""
+    if not os.path.exists(filepath):
+        return pd.DataFrame()
+    return pd.read_excel(filepath, sheet_name=sheet_name, header=header)
+
+def get_excel_df(filepath):
+    """Helper that computes the file modification time automatically and calls the cached reader."""
+    if not filepath or not os.path.exists(filepath):
+        return pd.DataFrame()
+    mtime = os.path.getmtime(filepath)
+    return cached_read_excel(filepath, mtime)
+
+def get_excel_sheet_df(filepath, sheet_name=None, header='infer'):
+    """Helper that computes the file modification time automatically and calls the cached sheet reader."""
+    if not filepath or not os.path.exists(filepath):
+        return pd.DataFrame()
+    mtime = os.path.getmtime(filepath)
+    return cached_read_excel_sheet(filepath, mtime, sheet_name, header)
+
+# ==========================================
 # USER CONFIGURATIONS & PERSISTENCE
 # ==========================================
 MAIN_HEADER_SIZE = "28px" 
@@ -329,18 +362,18 @@ if app_mode == "Bulk Averages Calculator":
         else:
             with st.spinner(f"Running {domain} Averages Engine..."):
                 try:
-                    reg_players = pd.read_excel(f_reg)
-                    aliases = pd.read_excel(f_alias)
-                    league_structure = pd.read_excel(f_league)
+                    reg_players = get_excel_df(f_reg)
+                    aliases = get_excel_df(f_alias)
+                    league_structure = get_excel_df(f_league)
                     
-                    batting = pd.read_excel(f_bat)
-                    bowling = pd.read_excel(f_bowl)
+                    batting = get_excel_df(f_bat)
+                    bowling = get_excel_df(f_bowl)
                     
                     if domain == "Men's" and include_irish:
                         if os.path.exists(f_irish_bat):
-                            batting = pd.concat([batting, pd.read_excel(f_irish_bat)], ignore_index=True)
+                            batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
                         if os.path.exists(f_irish_bowl):
-                            bowling = pd.concat([bowling, pd.read_excel(f_irish_bowl)], ignore_index=True)
+                            bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                     # Advanced Cup/T20 Filtering
                     cup_match_dict = {}
@@ -352,7 +385,7 @@ if app_mode == "Bulk Averages Calculator":
                                 if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
                                     target_sheet = sheet
                                     break
-                            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+                            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
                             
                             def local_parse(group_str):
                                 try:
@@ -417,8 +450,8 @@ if app_mode == "Bulk Averages Calculator":
                             bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, t20_kws))]
 
                     # Read the manual mapping files if they exist
-                    unreg_df = pd.read_excel(f_unreg) if os.path.exists(f_unreg) else None
-                    sec_df = pd.read_excel(f_secondary) if os.path.exists(f_secondary) else None
+                    unreg_df = get_excel_df(f_unreg) if os.path.exists(f_unreg) else None
+                    sec_df = get_excel_df(f_secondary) if os.path.exists(f_secondary) else None
                     
                     alias_map = eng.build_alias_map(aliases, domain)
                     secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
@@ -599,17 +632,17 @@ elif app_mode == "Player Word Doc Generator":
             else:
                 if not st.session_state.get('data_loaded'):
                     with st.spinner("Searching datasets and building options..."):
-                        reg_players = pd.read_excel(f_reg)
-                        aliases = pd.read_excel(f_alias)
+                        reg_players = get_excel_df(f_reg)
+                        aliases = get_excel_df(f_alias)
                         
-                        batting = pd.read_excel(f_bat)
-                        bowling = pd.read_excel(f_bowl)
+                        batting = get_excel_df(f_bat)
+                        bowling = get_excel_df(f_bowl)
                         
                         if domain == "Men's" and include_irish:
                             if os.path.exists(f_irish_bat):
-                                batting = pd.concat([batting, pd.read_excel(f_irish_bat)], ignore_index=True)
+                                batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
                             if os.path.exists(f_irish_bowl):
-                                bowling = pd.concat([bowling, pd.read_excel(f_irish_bowl)], ignore_index=True)
+                                bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                         alias_map = eng.build_alias_map(aliases, domain)
                         player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
