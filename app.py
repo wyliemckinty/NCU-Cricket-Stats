@@ -202,370 +202,20 @@ with st.sidebar:
     app_mode = st.radio(
         "Choose a module to run:",
         [
-            "Bulk Averages Calculator", 
             "Player Word Doc Generator", 
             "Registration Checks",
             "Midweek Registration & Starring Check",
             "Starring & Inactivity Reports",
             "Club Fines Generator",
             "Unregistered Player Fines Generator",
-            "League Milestones Report"
         ]
     )
     st.divider()
 
 # ==========================================
-# TOOL 1: BULK AVERAGES
+# TOOL 1: WORD DOC GENERATOR
 # ==========================================
-if app_mode == "Bulk Averages Calculator":
-    init_threshold_store()
-    
-    st.title(PAGE_TITLES["bulk_averages"])
-    st.markdown("Generate full season averages for Men's, Women's, or Midweek leagues.")
-
-    st.subheader("Select League Domain")
-    domain = st.radio("Choose the ruleset and default files to apply:", ["Men's", "Women's", "Midweek"], horizontal=True)
-
-    st.divider() 
-    col_thresh_title, col_save, col_reset = st.columns([2.5, 1, 1])
-    with col_thresh_title:
-        st.subheader("Set Minimum Thresholds")
-    with col_save:
-        if st.button("💾 Save Thresholds to Disk", use_container_width=True):
-            save_threshold_settings()
-            st.toast("Saved custom thresholds as new defaults!", icon="✅")
-    with col_reset:
-        if st.button("🔄 Reset Defaults", use_container_width=True):
-            reset_threshold_settings()
-            st.toast("Restored factory default thresholds!", icon="ℹ️")
-    
-    if domain == "Midweek":
-        st.markdown("**Midweek Overall Qualifiers** *(Groups are fixed to 20 Runs / 2 Wickets)*")
-        col1, col2, col3 = st.columns(3)
-        with col1: mw_min_runs = st.number_input("Minimum Runs", min_value=0, value=get_threshold_val("mw_min_runs"), key="mw_min_runs")
-        with col2: mw_min_innings = st.number_input("Minimum Innings", min_value=0, value=get_threshold_val("mw_min_innings"), key="mw_min_innings")
-        with col3: mw_min_wickets = st.number_input("Minimum Wickets", min_value=0, value=get_threshold_val("mw_min_wickets"), key="mw_min_wickets")
-        
-    elif domain == "Women's":
-        st.info("💡 **Women's Tiered Rules Active:** Below are your automated target thresholds. Customize any values before exporting.")
-        with st.container(border=True):
-            st.markdown("🏆 **Premier League and Senior League Section 1**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: w1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w1_runs"), key="w1_runs")
-            with c2: w1_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("w1_bmat"), key="w1_bmat")
-            with c3: w1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w1_wick"), key="w1_wick")
-            with c4: w1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w1_mmat"), key="w1_mmat")
-            
-        with st.container(border=True):
-            st.markdown("🏏 **Junior League Sections 1**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: w2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w2_runs"), key="w2_runs")
-            with c2: w2_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("w2_bmat"), key="w2_bmat")
-            with c3: w2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w2_wick"), key="w2_wick")
-            with c4: w2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w2_mmat"), key="w2_mmat")
-            
-    else:  # Men's
-        st.info("💡 **Men's Tiered Rules Active:** Below are your automated target thresholds. Customize any values before exporting.")
-        with st.container(border=True):
-            st.markdown("🏆 **Premier League and Section 1**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t1_runs"), key="t1_runs")
-            with c2: t1_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t1_bmat"), key="t1_bmat")
-            with c3: t1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t1_wick"), key="t1_wick")
-            with c4: t1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t1_mmat"), key="t1_mmat")
-            
-        with st.container(border=True):
-            st.markdown("🛡️ **Senior League Sections 2 and 3**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t2_runs"), key="t2_runs")
-            with c2: t2_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t2_bmat"), key="t2_bmat")
-            with c3: t2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t2_wick"), key="t2_wick")
-            with c4: t2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t2_mmat"), key="t2_mmat")
-            
-        with st.container(border=True):
-            st.markdown("🏏 **Junior League Sections 1 to 10**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t3_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t3_runs"), key="t3_runs")
-            with c2: t3_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t3_bmat"), key="t3_bmat")
-            with c3: t3_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t3_wick"), key="t3_wick")
-            with c4: t3_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t3_mmat"), key="t3_mmat")
-            
-        with st.container(border=True):
-            st.markdown("🌱 **Junior League Sections 11a to 11b**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t4_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t4_runs"), key="t4_runs")
-            with c2: t4_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t4_bmat"), key="t4_bmat")
-            with c3: t4_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t4_wick"), key="t4_wick")
-            with c4: t4_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t4_mmat"), key="t4_mmat")
-
-    st.divider() 
-    st.subheader("Set Sorting Preferences")
-    colX, colY = st.columns(2)
-    with colX: bat_sort_pref = st.selectbox("Batting Primary Sort", ["Runs", "Average", "Strike Rate"], index=0)
-    with colY: bowl_sort_pref = st.selectbox("Bowling Primary Sort", ["Wickets", "Average", "Economy", "Strike Rate"], index=0)
-
-    # Match Inclusion & Threshold Settings
-    st.divider()
-    st.subheader("Match Inclusion & Threshold Settings")
-    colA, colB, colC = st.columns(3)
-    
-    include_cup = True
-    include_t20 = True
-    
-    with colA:
-        if domain in ["Men's", "Women's"]:
-            include_cup = st.toggle("Include Cup Matches", value=True)
-    with colB:
-        if domain == "Men's":
-            include_t20 = st.toggle("Include T20 Matches", value=True)
-    with colC:
-        disable_thresholds = st.toggle(
-            "Set all target thresholds to 0", 
-            value=False, 
-            key="disable_thresholds", 
-            on_change=toggle_zero_thresholds
-        )
-
-    with st.sidebar:
-        st.divider() 
-        c_files = eng.DEFAULT_FILES[domain]
-        with st.expander("📁 File Path Configurations", expanded=False):
-            st.markdown("*Verify or update the default local file paths below.*")
-            f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"avg_reg_{domain}")
-            f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"avg_alias_{domain}")
-            f_unreg = st.text_input("Unregistered Players Map", value=c_files.get("unreg", ""), key=f"avg_unreg_{domain}")
-            f_secondary = st.text_input("Secondary Team Map", value=c_files.get("secondary", ""), key=f"avg_sec_{domain}") 
-            f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"avg_league_{domain}")
-            f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"avg_bat_{domain}")
-            f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"avg_bowl_{domain}")
-            f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"avg_cup_{domain}")
-    
-    include_irish = False
-    if domain == "Men's":
-        include_irish = st.toggle("Include Irish Competitions in Averages?", value=False)
-        
-    if domain == "Men's" and include_irish:
-        with st.sidebar:
-            with st.expander("📁 File Path Configurations", expanded=False):
-                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="avg_irish_bat")
-                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="avg_irish_bowl")
-
-    st.subheader("Generate Averages")
-    if st.button("🚀 Process Averages", type="primary"):
-        files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl, f_cup]
-        if domain == "Men's" and include_irish:
-            files_to_check.extend([f_irish_bat, f_irish_bowl])
-            
-        missing_files = [f for f in files_to_check if not os.path.exists(f)]
-        if missing_files:
-            st.error(f"Cannot find the following files in this directory:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
-        else:
-            with st.spinner(f"Running {domain} Averages Engine..."):
-                try:
-                    reg_players = get_excel_df(f_reg)
-                    aliases = get_excel_df(f_alias)
-                    league_structure = get_excel_df(f_league)
-                    
-                    batting = get_excel_df(f_bat)
-                    bowling = get_excel_df(f_bowl)
-                    
-                    if domain == "Men's" and include_irish:
-                        if os.path.exists(f_irish_bat):
-                            batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
-                        if os.path.exists(f_irish_bowl):
-                            bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
-
-                    # Advanced Cup/T20 Filtering
-                    cup_match_dict = {}
-                    if os.path.exists(f_cup):
-                        try:
-                            excel_file_cup = pd.ExcelFile(f_cup)
-                            target_sheet = excel_file_cup.sheet_names[0]
-                            for sheet in excel_file_cup.sheet_names:
-                                if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
-                                    target_sheet = sheet
-                                    break
-                            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
-                            
-                            def local_parse(group_str):
-                                try:
-                                    group_str = str(group_str).strip()
-                                    parts = group_str.rsplit(' - ', 1)
-                                    date_str = parts[1].strip() if len(parts) == 2 else group_str
-                                    rest = parts[0].strip() if len(parts) == 2 else group_str
-                                    match_date = pd.to_datetime(date_str, dayfirst=True, errors='coerce')
-                                    if pd.notna(match_date): match_date = match_date.normalize()
-                                    if ' v ' in rest:
-                                        team_a, remainder = rest.split(' v ', 1)
-                                        team_b = remainder.rsplit(', ', 1)[0] if ', ' in remainder else (remainder.rsplit(' - ', 1)[0] if ' - ' in remainder else remainder)
-                                    else:
-                                        team_a, team_b = rest, "Unknown"
-                                    return team_a.strip(), team_b.strip(), match_date
-                                except: return None, None, None
-
-                            for _, row_data in cup_df.iterrows():
-                                match_str_raw = str(row_data[0]).strip()
-                                cup_name = str(row_data[1]).strip()
-                                if match_str_raw.lower() in ['match string', 'match group', 'match', 'nan']: continue
-                                cleaned_match_str = eng.doc_format_cricket_names(match_str_raw, domain)
-                                c_team_a, c_team_b, c_date = local_parse(cleaned_match_str)
-                                if c_team_a and c_team_b:
-                                    teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
-                                    if pd.notna(c_date):
-                                        cup_match_dict[f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}"] = cup_name
-                                    else:
-                                        cup_match_dict[f"{teams[0]}_{teams[1]}"] = cup_name
-                        except Exception: pass
-
-                    def is_target_match(grp_str, target_kws):
-                        grp_str_clean = str(grp_str).lower()
-                        if any(kw in grp_str_clean for kw in target_kws):
-                            return True
-                        if cup_match_dict:
-                            c_team_a, c_team_b, c_date = local_parse(eng.doc_format_cricket_names(grp_str, domain))
-                            if c_team_a and c_team_b:
-                                teams = sorted([str(c_team_a).lower(), str(c_team_b).lower()])
-                                comp = None
-                                if pd.notna(c_date):
-                                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}")
-                                if not comp:
-                                    comp = cup_match_dict.get(f"{teams[0]}_{teams[1]}")
-                                if comp and any(kw in str(comp).lower() for kw in target_kws):
-                                    return True
-                        return False
-
-                    cup_kws = ['cup', 'trophy', 'shield', 'plate', 'bowl', 'vase', 'challenge']
-                    t20_kws = ['t20', 'twenty20']
-
-                    if domain in ["Men's", "Women's"] and not include_cup:
-                        if 'Group' in batting.columns:
-                            batting = batting[~batting['Group'].apply(lambda x: is_target_match(x, cup_kws))]
-                        if 'Group' in bowling.columns:
-                            bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, cup_kws))]
-                            
-                    if domain == "Men's" and not include_t20:
-                        if 'Group' in batting.columns:
-                            batting = batting[~batting['Group'].apply(lambda x: is_target_match(x, t20_kws))]
-                        if 'Group' in bowling.columns:
-                            bowling = bowling[~bowling['Group'].apply(lambda x: is_target_match(x, t20_kws))]
-
-                    # Read the manual mapping files if they exist
-                    unreg_df = get_excel_df(f_unreg) if os.path.exists(f_unreg) else None
-                    sec_df = get_excel_df(f_secondary) if os.path.exists(f_secondary) else None
-                    
-                    alias_map = eng.build_alias_map(aliases, domain)
-                    secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
-                    
-                    league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
-                    player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
-                    
-                    # Apply contextual name cleansing (Restored Lines)
-                    batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-                    bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
-                    
-                    batting_avgs, bowling_avgs = eng.calculate_averages(batting, bowling, player_club_map, team_keys, league_dict, domain, bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map)
-                    
-                    display_league_order = []
-                    for raw_league in original_league_order:
-                        if domain == "Midweek": display_league_order.append(str(raw_league))
-                        else:
-                            league_str = str(raw_league)
-                            target_words = ['premier', 'senior league 1', 'senior league 2', 'senior league 3'] if domain == "Men's" else ['premier', 'senior league 1', 'senior league 2', 'senior league 3', 'senior']
-                            if any(word in league_str.lower() for word in target_words): display_league_order.append(league_str.replace('NCU', 'Mercury'))
-                            else: display_league_order.append(league_str)
-                    
-                    unique_leagues = sorted(
-                        list(set(batting_avgs['League'].unique()).union(set(bowling_avgs['League'].unique()))), 
-                        key=lambda x: eng.custom_league_sort(x, domain, display_league_order)
-                    )
-
-                    output_buffer = io.BytesIO()
-                    with pd.ExcelWriter(output_buffer, engine='xlsxwriter') as writer:
-                        for league in unique_leagues:
-                            league_bat = batting_avgs[batting_avgs['League'] == league].drop(columns=['League'])
-                            league_bowl = bowling_avgs[bowling_avgs['League'] == league].drop(columns=['League'])
-                            
-                            tab_prefix = league.replace("League", "Lge").replace("Midweek", "MW").replace("Group", "Grp").replace("Overall", "Ovr").replace("Unassigned", "Non NCU Players").strip()[:24].strip()
-                            
-                            name_lower = str(league).lower()
-                            if domain == "Midweek":
-                                mw_r = st.session_state.get("mw_min_runs", get_threshold_val("mw_min_runs"))
-                                mw_i = st.session_state.get("mw_min_innings", get_threshold_val("mw_min_innings"))
-                                mw_w = st.session_state.get("mw_min_wickets", get_threshold_val("mw_min_wickets"))
-                                bat_thresh, bat_match_thresh = (mw_r, mw_i) if "Overall" in league else (20, 0)
-                                bowl_thresh, bowl_match_thresh = (mw_w, 0) if "Overall" in league else (2, 0)
-                            elif domain == "Women's":
-                                if "premier" in name_lower or "senior league 1" in name_lower or "senior 1" in name_lower or "senior league" in name_lower:
-                                    bat_thresh = st.session_state.get("w1_runs", get_threshold_val("w1_runs"))
-                                    bat_match_thresh = st.session_state.get("w1_bmat", get_threshold_val("w1_bmat"))
-                                    bowl_thresh = st.session_state.get("w1_wick", get_threshold_val("w1_wick"))
-                                    bowl_match_thresh = st.session_state.get("w1_mmat", get_threshold_val("w1_mmat"))
-                                else:
-                                    bat_thresh = st.session_state.get("w2_runs", get_threshold_val("w2_runs"))
-                                    bat_match_thresh = st.session_state.get("w2_bmat", get_threshold_val("w2_bmat"))
-                                    bowl_thresh = st.session_state.get("w2_wick", get_threshold_val("w2_wick"))
-                                    bowl_match_thresh = st.session_state.get("w2_mmat", get_threshold_val("w2_mmat"))
-                            else:  # Men's
-                                if "premier" in name_lower or "senior league 1" in name_lower or "senior 1" in name_lower:
-                                    bat_thresh = st.session_state.get("t1_runs", get_threshold_val("t1_runs"))
-                                    bat_match_thresh = st.session_state.get("t1_bmat", get_threshold_val("t1_bmat"))
-                                    bowl_thresh = st.session_state.get("t1_wick", get_threshold_val("t1_wick"))
-                                    bowl_match_thresh = st.session_state.get("t1_mmat", get_threshold_val("t1_mmat"))
-                                elif "senior league 2" in name_lower or "senior league 3" in name_lower or "senior 2" in name_lower or "senior 3" in name_lower:
-                                    bat_thresh = st.session_state.get("t2_runs", get_threshold_val("t2_runs"))
-                                    bat_match_thresh = st.session_state.get("t2_bmat", get_threshold_val("t2_bmat"))
-                                    bowl_thresh = st.session_state.get("t2_wick", get_threshold_val("t2_wick"))
-                                    bowl_match_thresh = st.session_state.get("t2_mmat", get_threshold_val("t2_mmat"))
-                                elif "11a" in name_lower or "11b" in name_lower or "junior league 11" in name_lower:
-                                    bat_thresh = st.session_state.get("t4_runs", get_threshold_val("t4_runs"))
-                                    bat_match_thresh = st.session_state.get("t4_bmat", get_threshold_val("t4_bmat"))
-                                    bowl_thresh = st.session_state.get("t4_wick", get_threshold_val("t4_wick"))
-                                    bowl_match_thresh = st.session_state.get("t4_mmat", get_threshold_val("t4_mmat"))
-                                else:
-                                    bat_thresh = st.session_state.get("t3_runs", get_threshold_val("t3_runs"))
-                                    bat_match_thresh = st.session_state.get("t3_bmat", get_threshold_val("t3_bmat"))
-                                    bowl_thresh = st.session_state.get("t3_wick", get_threshold_val("t3_wick"))
-                                    bowl_match_thresh = st.session_state.get("t3_mmat", get_threshold_val("t3_mmat"))
-
-                            if disable_thresholds:
-                                bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = 0, 0, 0, 0
-
-                            if not league_bat.empty:
-                                league_bat = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat['Matches'] >= bat_match_thresh)]
-                                if not league_bat.empty:
-                                    league_bat.insert(0, 'Position', range(1, len(league_bat) + 1))
-                                    eng.format_excel_sheet(writer, league_bat, f"{tab_prefix} Bat", min_label=f"Min {bat_thresh} runs, {bat_match_thresh} matches")
-                                
-                            if not league_bowl.empty:
-                                league_bowl = league_bowl[(league_bowl['Wickets'] >= bowl_thresh) & (league_bowl['Matches'] >= bowl_match_thresh)]
-                                if not league_bowl.empty:
-                                    league_bowl.insert(0, 'Position', range(1, len(league_bowl) + 1))
-                                    eng.format_excel_sheet(writer, league_bowl, f"{tab_prefix} Bowl", min_label=f"Min {bowl_thresh} wickets, {bowl_match_thresh} matches")
-                    
-                    st.success("✅ Averages calculated successfully!")
-                    st.subheader("👀 Computed Averages Preview (Top 50)")
-                    tab_preview_bat, tab_preview_bowl = st.tabs(["🏏 Batting Preview", "🔮 Bowling Preview"])
-                    with tab_preview_bat:
-                        st.dataframe(batting_avgs.head(50), width="stretch", hide_index=True)
-                    with tab_preview_bowl:
-                        st.dataframe(bowling_avgs.head(50), width="stretch", hide_index=True)
-                    
-                    st.divider()
-                    file_out_name = f"{domain.replace('''s''', '')}_Season_Averages_All_Leagues_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
-                    st.download_button(
-                        label="📥 Download Output Excel File",
-                        data=output_buffer.getvalue(),
-                        file_name=file_out_name,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        type="primary"
-                    )
-                except Exception as e:
-                    st.error(f"An error occurred during processing: {str(e)}")
-
-# ==========================================
-# TOOL 2: WORD DOC GENERATOR
-# ==========================================
-elif app_mode == "Player Word Doc Generator":
+if app_mode == "Player Word Doc Generator":
     st.title(PAGE_TITLES["player_doc"])
     
     if not DOCX_AVAILABLE:
@@ -602,7 +252,7 @@ elif app_mode == "Player Word Doc Generator":
 
         with st.container(border=True):
             st.subheader("🔍 Search Player Database")
-            search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Pawan Thakur")
+            search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Joe Bloggs")
             
             col_btn, _ = st.columns([1.5, 4])
             with col_btn:
@@ -847,7 +497,7 @@ elif app_mode == "Player Word Doc Generator":
                             st.info("Please select at least one player to generate a report.")
                             
 # ==========================================
-# TOOL 3: WEEKEND REGISTRATION CHECKS
+# TOOL 2: WEEKEND REGISTRATION CHECKS
 # ==========================================
 elif app_mode == "Registration Checks":
     st.title(PAGE_TITLES["reg_checks"])
@@ -968,7 +618,7 @@ elif app_mode == "Registration Checks":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 4: MIDWEEK REGISTRATION CHECKS
+# TOOL 3: MIDWEEK LEAGUE REGISTRATION CHECKS
 # ==========================================
 elif app_mode == "Midweek Registration & Starring Check":
     st.title(PAGE_TITLES["midweek_checks"])
@@ -1067,7 +717,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 5: STARRING & INACTIVITY REPORTS
+# TOOL 4: STARRING & INACTIVITY REPORTS
 # ==========================================
 elif app_mode == "Starring & Inactivity Reports":
     st.title(PAGE_TITLES["starring_reports"])
@@ -1146,7 +796,7 @@ elif app_mode == "Starring & Inactivity Reports":
                     st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 6: CLUB FINES GENERATOR
+# TOOL 5: CLUB FINES GENERATOR
 # ==========================================
 elif app_mode == "Club Fines Generator":
     st.title(PAGE_TITLES["fines_generator"])
@@ -1251,7 +901,7 @@ elif app_mode == "Club Fines Generator":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 7: UNREGISTERED FINES GENERATOR
+# TOOL 6: UNREGISTERED FINES GENERATOR
 # ==========================================
 elif app_mode == "Unregistered Player Fines Generator":
     st.title(PAGE_TITLES["unregistered_fines"])
@@ -1343,53 +993,3 @@ elif app_mode == "Unregistered Player Fines Generator":
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
                         
-# ==========================================
-# TOOL 8: LEAGUE MILESTONES REPORT
-# ==========================================
-elif app_mode == "League Milestones Report":
-    st.title(PAGE_TITLES["milestones_report"])
-    st.markdown("Generate a formatted Word document reporting all Centurions (100+ runs) and top Wicket hauls exclusively for the top 4 Mercury leagues.")
-    
-    if not DOCX_AVAILABLE:
-        st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
-    else:
-        st.subheader("Select League Domain")
-        domain = st.radio("Choose the dataset domain:", ["Men's", "Women's"], horizontal=True)
-
-        with st.sidebar:
-            st.divider() 
-            c_files = eng.DEFAULT_FILES[domain]
-            with st.expander("📁 File Path Configurations", expanded=False):
-                st.markdown("*Verify or update the default local file paths below.*")
-                f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"ms_reg_{domain}")
-                f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"ms_alias_{domain}")
-                f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"ms_league_{domain}")
-                f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"ms_bat_{domain}")
-                f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"ms_bowl_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"ms_cup_{domain}")
-        
-        st.divider()
-        if st.button("📄 Generate Milestones Word Doc", type="primary"):
-            files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl]
-            missing_files = [f for f in files_to_check if not os.path.exists(f)]
-            
-            if missing_files:
-                st.error("Cannot find the following files:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
-            else:
-                with st.spinner("Extracting milestones, stripping cup matches, and building Word document..."):
-                    try:
-                        doc_io = eng.generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup)
-                        
-                        # Determine filename label based on domain
-                        domain_label = "Open" if domain == "Men's" else "Women"
-                        
-                        st.success("✅ Milestones report generated successfully!")
-                        st.download_button(
-                            label="📥 Download Milestones Report",
-                            data=doc_io.getvalue(),
-                            file_name=f"Mercury_{domain_label}_Milestones_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                    except Exception as e:
-                        st.error(f"An error occurred: {str(e)}")
