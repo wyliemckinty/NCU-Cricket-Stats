@@ -1,0 +1,23 @@
+name: Sync to Stats Repo
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  repo-sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Source Code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push to Secondary Repository
+        uses: wangyucode/git-sync@v3
+        with:
+          target_repo: ${{ github.repository_owner }}/NCU-Cricket-Stats
+          target_branch: main
+          destination_branch: main
+          github_token: ${{ secrets.SYNC_TOKEN }}
