@@ -15,9 +15,10 @@ jobs:
           fetch-depth: 0
 
       - name: Push to Secondary Repository
-        uses: wangyucode/git-sync@v3
-        with:
-          target_repo: ${{ github.repository_owner }}/NCU-Cricket-Stats
-          target_branch: main
-          destination_branch: main
-          github_token: ${{ secrets.SYNC_TOKEN }}
+        env:
+          PAT_TOKEN: ${{ secrets.SYNC_TOKEN }}
+        run: |
+          git config --global user.name "GitHub Action Sync"
+          git config --global user.email "action@github.com"
+          git remote add destination https://${PAT_TOKEN}@github.com/${{ github.repository_owner }}/NCU-Cricket-Stats.git
+          git push destination main:main --force
