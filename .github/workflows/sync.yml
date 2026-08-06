@@ -16,9 +16,9 @@ jobs:
 
       - name: Push to Secondary Repository
         env:
-          PAT_TOKEN: ${{ secrets.SYNC_TOKEN }}
+          SYNC_TOKEN: ${{ secrets.SYNC_TOKEN }}
         run: |
           git config --global user.name "GitHub Action Sync"
           git config --global user.email "action@github.com"
-          git remote add destination https://${PAT_TOKEN}@github.com/${{ github.repository_owner }}/NCU-Cricket-Stats.git
+          git remote add destination "https://x-access-token:${SYNC_TOKEN}@github.com/${{ github.repository_owner }}/NCU-Cricket-Stats.git"
           git push destination main:main --force
