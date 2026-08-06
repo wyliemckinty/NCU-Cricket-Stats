@@ -21,7 +21,5 @@ jobs:
         run: |
           git config --global user.name "GitHub Action Sync"
           git config --global user.email "action@github.com"
-          git rm -rf --cached .github
-          git commit -m "Exclude workflows from sync" || true
           git remote add destination "https://x-access-token:${SYNC_TOKEN}@github.com/wyliemckinty/NCU-Cricket-Stats.git"
           git push destination main:main --force
