@@ -81,7 +81,7 @@ KNOWN_DUPLICATES = {
     'Thomas Hamill': ['Waringstown', 'Muckamore'],                        
     'Dylan McCann': ['Lisburn', 'Carrickfergus'],
     'James Shannon': ['Holywood', 'Saintfield'],
-    'James Atkinson': ['Holywood 1881', 'Armagh', 'Lisburn'],
+    'James Atkinson': ['Holywood', 'Armagh', 'Lisburn'],
     'David Kane': ['Dungannon', 'Templepatrick'],
     'Andrew Holmes': ['CIYMS', 'CSNI'],
     'Timothy Scott': ['Saintfield', 'Ballymena'],
@@ -89,7 +89,7 @@ KNOWN_DUPLICATES = {
     'Harry Thompson': ['Derriaghy', 'Lurgan'],
     'Joshua Wilson': ['Armagh', 'Muckamore'],
     'Noah Kelly': ['Cregagh', 'Derriaghy'],
-    'Adam Orr': ['Holywood 1881', 'Templepatrick'],
+    'Adam Orr': ['Holywood', 'Templepatrick'],
     'Jonathan Bell': ['Derriaghy', 'CSNI'],
     'David Jones': ['Instonians', 'Downpatrick'],
     'Anoop Joseph': ['Lurgan', 'Downpatrick'],
@@ -361,6 +361,7 @@ def clean_club_for_matching(club_str):
     if pd.isna(club_str): return ""
     c = str(club_str).lower()
     c = re.sub(r'\bcricket club\b|\bcc\b', '', c)
+    c = c.replace('1881', '')
     c = c.replace('ciyms', 'ci')
     c = re.sub(r'(?i)northern\s+ireland\s+malayali\s+association', 'nimacc', c)
     c = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nimacc', c)
