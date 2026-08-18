@@ -29,7 +29,7 @@ warnings.filterwarnings('ignore')
 # ==========================================
 # Set any of these to True to show, or False to hide the module from secretaries:
 ENABLE_PLAYER_WORD_DOC        = True
-ENABLE_REGISTRATION_CHECKS    = False
+ENABLE_REGISTRATION_CHECKS    = True
 ENABLE_MIDWEEK_CHECKS         = False
 ENABLE_STARRING_REPORTS       = True
 ENABLE_CLUB_CONTACTS          = True
