@@ -6,13 +6,25 @@ import pandas as pd
 import os
 import io
 import json
+import re
 from datetime import datetime
 import warnings
 
 # Import shared core engine
+import importlib
 import engine as eng
+importlib.reload(eng)
 
 warnings.filterwarnings('ignore')
+
+# ==========================================
+# STREAMLIT CACHED EXCEL LOADERS
+# ==========================================
+def get_excel_df(filepath):
+    return eng.get_excel_df(filepath)
+
+def get_excel_sheet_df(filepath, sheet_name=None, header='infer'):
+    return eng.get_excel_sheet_df(filepath, sheet_name=sheet_name, header=header)
 
 # Enable docx for Milestones Report
 try:
@@ -100,6 +112,124 @@ with st.sidebar:
 # ==========================================
 # TOOL 1: BULK AVERAGES
 # ==========================================
+def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, include_t20):
+    """
+    Filters scorecard records according to Cup and T20 inclusion toggles
+    with strict date matching and explicit League match protection.
+    """
+    if include_cup and include_t20:
+        return batting_df, bowling_df
+
+    cup_match_set = set()  # Stores (team1, team2, date_YYYY-MM-DD)
+    t20_match_set = set()  # Stores (team1, team2, date_YYYY-MM-DD)
+
+    if f_cup and os.path.exists(f_cup):
+        try:
+            excel_file_cup = pd.ExcelFile(f_cup)
+            target_sheet = excel_file_cup.sheet_names[0]
+            for sheet in excel_file_cup.sheet_names:
+                if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
+                    target_sheet = sheet
+                    break
+            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+
+            for _, row_data in cup_df.iterrows():
+                match_str_raw = str(row_data[0]).strip()
+                cup_name = str(row_data[1]).strip()
+                if match_str_raw.lower() in ['match string', 'match group', 'match', 'nan']:
+                    continue
+
+                parts = match_str_raw.rsplit(' - ', 1)
+                rest = parts[0].strip()
+                d_str = parts[1].strip() if len(parts) == 2 else ""
+
+                # Clean ordinal dates (e.g., 24th -> 24)
+                clean_d = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', d_str, flags=re.IGNORECASE).strip()
+                dt = pd.to_datetime(clean_d, dayfirst=True, errors='coerce')
+
+                if ' v ' in rest and pd.notna(dt):
+                    t_a, rem = rest.split(' v ', 1)
+                    t_b = rem.rsplit(', ', 1)[0] if ', ' in rem else rem
+                    teams = sorted([t_a.strip().lower(), t_b.strip().lower()])
+                    date_key = dt.strftime('%Y-%m-%d')
+                    key = (teams[0], teams[1], date_key)
+
+                    is_t20_comp = any(kw in cup_name.lower() or kw in match_str_raw.lower() for kw in ['t20', 'twenty20', 'lvs'])
+                    if is_t20_comp:
+                        t20_match_set.add(key)
+                    else:
+                        cup_match_set.add(key)
+        except Exception:
+            pass
+
+    def classify_match(grp_str):
+        grp_lower = str(grp_str).lower()
+
+        # 1. Protect explicit League matches first
+        is_explicit_league = any(kw in grp_lower for kw in [
+            'premier league', 'senior league', 'junior league',
+            'mercury premier', 'mercury senior', 'mercury junior',
+            'section 1', 'section 2', 'section 3', 'section 4'
+        ])
+
+        # 2. Check explicit T20 match markers
+        is_explicit_t20 = any(kw in grp_lower for kw in [
+            'lvs t20', 'twenty20', 't20 cup', 't20 trophy', 't20 bowl', 't20 shield'
+        ])
+        if is_explicit_t20:
+            return 't20'
+
+        # 3. Check explicit Cup competition names
+        cup_specific_kws = [
+            'gallagher challenge cup', 'gallagher challenge plate',
+            'junior cup', 'intermediate cup', 'lindsay cup',
+            'minor qualifying cup', 'development cup', 'irish senior cup',
+            'irish cup', 'national cup', 'ulster plate'
+        ]
+        if any(kw in grp_lower for kw in cup_specific_kws):
+            return 'cup'
+
+        # 4. Check date-strict match against Cup Fixtures Master
+        if ' v ' in grp_str:
+            parts = str(grp_str).rsplit(' - ', 1)
+            rest = parts[0].strip()
+            d_str = parts[1].strip() if len(parts) == 2 else ""
+            clean_d = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', d_str, flags=re.IGNORECASE).strip()
+            dt = pd.to_datetime(clean_d, dayfirst=True, errors='coerce')
+
+            if pd.notna(dt):
+                date_key = dt.strftime('%Y-%m-%d')
+                t_a, rem = rest.split(' v ', 1)
+                t_b = rem.rsplit(', ', 1)[0] if ', ' in rem else rem
+                teams = sorted([t_a.strip().lower(), t_b.strip().lower()])
+                key = (teams[0], teams[1], date_key)
+
+                if key in t20_match_set:
+                    return 't20'
+                if key in cup_match_set:
+                    return 'cup'
+
+        # 5. Fallback checks only if NOT an explicit league fixture
+        if not is_explicit_league:
+            if 't20' in grp_lower:
+                return 't20'
+            if any(kw in grp_lower for kw in ['challenge cup', 'cup', 'trophy', 'plate', 'shield', 'bowl', 'vase']):
+                return 'cup'
+
+        return 'league'
+
+    def should_keep(grp):
+        m_type = classify_match(grp)
+        if m_type == 't20' and not include_t20:
+            return False
+        if m_type == 'cup' and not include_cup:
+            return False
+        return True
+
+    filtered_batting = batting_df[batting_df['Group'].apply(should_keep)].copy()
+    filtered_bowling = bowling_df[bowling_df['Group'].apply(should_keep)].copy()
+    return filtered_batting, filtered_bowling
+    
 if app_mode == "Bulk Averages Calculator":
     init_threshold_store()
     st.title("📊 League Bulk Averages Calculator")
@@ -133,7 +263,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🏆 **Premier League and Senior League Section 1**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: w1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w1_runs"), key="w1_runs")
-            with c2: w1_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("w1_bmat"), key="w1_bmat")
+            with c2: w1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w1_bmat"), key="w1_bmat")
             with c3: w1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w1_wick"), key="w1_wick")
             with c4: w1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w1_mmat"), key="w1_mmat")
             
@@ -141,7 +271,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🏏 **Junior League Sections 1**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: w2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w2_runs"), key="w2_runs")
-            with c2: w2_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("w2_bmat"), key="w2_bmat")
+            with c2: w2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w2_bmat"), key="w2_bmat")
             with c3: w2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w2_wick"), key="w2_wick")
             with c4: w2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w2_mmat"), key="w2_mmat")
             
@@ -151,7 +281,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🏆 **Premier League and Section 1**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: t1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t1_runs"), key="t1_runs")
-            with c2: t1_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t1_bmat"), key="t1_bmat")
+            with c2: t1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t1_bmat"), key="t1_bmat")
             with c3: t1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t1_wick"), key="t1_wick")
             with c4: t1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t1_mmat"), key="t1_mmat")
             
@@ -159,7 +289,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🛡️ **Senior League Sections 2 and 3**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: t2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t2_runs"), key="t2_runs")
-            with c2: t2_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t2_bmat"), key="t2_bmat")
+            with c2: t2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t2_bmat"), key="t2_bmat")
             with c3: t2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t2_wick"), key="t2_wick")
             with c4: t2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t2_mmat"), key="t2_mmat")
             
@@ -167,7 +297,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🏏 **Junior League Sections 1 to 10**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: t3_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t3_runs"), key="t3_runs")
-            with c2: t3_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t3_bmat"), key="t3_bmat")
+            with c2: t3_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t3_bmat"), key="t3_bmat")
             with c3: t3_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t3_wick"), key="t3_wick")
             with c4: t3_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t3_mmat"), key="t3_mmat")
             
@@ -175,7 +305,7 @@ if app_mode == "Bulk Averages Calculator":
             st.markdown("🌱 **Junior League Sections 11a to 11b**")
             c1, c2, c3, c4 = st.columns(4)
             with c1: t4_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t4_runs"), key="t4_runs")
-            with c2: t4_bmat = st.number_input("Min Bat Matches", min_value=0, value=get_threshold_val("t4_bmat"), key="t4_bmat")
+            with c2: t4_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t4_bmat"), key="t4_bmat")
             with c3: t4_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t4_wick"), key="t4_wick")
             with c4: t4_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t4_mmat"), key="t4_mmat")
 
@@ -230,6 +360,8 @@ if app_mode == "Bulk Averages Calculator":
         else:
             with st.spinner(f"Running {domain} Averages Engine..."):
                 try:
+                    
+                    # Load datasets
                     reg_players = pd.read_excel(f_reg)
                     aliases = pd.read_excel(f_alias)
                     league_structure = pd.read_excel(f_league)
@@ -240,6 +372,13 @@ if app_mode == "Bulk Averages Calculator":
                         if os.path.exists(f_irish_bat): batting = pd.concat([batting, pd.read_excel(f_irish_bat)], ignore_index=True)
                         if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, pd.read_excel(f_irish_bowl)], ignore_index=True)
 
+                    # --- ADD THIS MATCH FORMAT FILTER ---
+                    if domain in ["Men's", "Women's"]:
+                        batting, bowling = filter_match_formats(
+                            batting, bowling, f_cup, domain, include_cup, include_t20
+                        )
+                    # -----------------------------------
+
                     unreg_df = pd.read_excel(f_unreg) if os.path.exists(f_unreg) else None
                     sec_df = pd.read_excel(f_secondary) if os.path.exists(f_secondary) else None
                     
@@ -247,12 +386,16 @@ if app_mode == "Bulk Averages Calculator":
                     secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
                     league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
                     player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
+                    player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
                     
                     batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
                     bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
                     
-                    batting_avgs, bowling_avgs = eng.calculate_averages(batting, bowling, player_club_map, team_keys, league_dict, domain, bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map)
-                    
+                    batting_avgs, bowling_avgs = eng.calculate_averages(
+                        batting, bowling, player_club_map, team_keys, league_dict, domain,
+                        bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map,
+                        alias_map=alias_map, _cache_version=datetime.now().timestamp()
+                    )                   
                     display_league_order = []
                     for raw_league in original_league_order:
                         if domain == "Midweek": display_league_order.append(str(raw_league))
@@ -314,13 +457,16 @@ if app_mode == "Bulk Averages Calculator":
                                     bowl_thresh = st.session_state.get("t3_wick", get_threshold_val("t3_wick"))
                                     bowl_match_thresh = st.session_state.get("t3_mmat", get_threshold_val("t3_mmat"))
 
+                            bat_qual_col = 'Innings'
+                            bat_qual_label = 'innings'
+
                             if disable_thresholds: bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = 0, 0, 0, 0
 
                             if not league_bat.empty:
-                                league_bat = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat['Matches'] >= bat_match_thresh)]
+                                league_bat = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat[bat_qual_col] >= bat_match_thresh)]
                                 if not league_bat.empty:
                                     league_bat.insert(0, 'Position', range(1, len(league_bat) + 1))
-                                    eng.format_excel_sheet(writer, league_bat, f"{tab_prefix} Bat", min_label=f"Min {bat_thresh} runs, {bat_match_thresh} matches")
+                                    eng.format_excel_sheet(writer, league_bat, f"{tab_prefix} Bat", min_label=f"Min {bat_thresh} runs, {bat_match_thresh} {bat_qual_label}")
                                 
                             if not league_bowl.empty:
                                 league_bowl = league_bowl[(league_bowl['Wickets'] >= bowl_thresh) & (league_bowl['Matches'] >= bowl_match_thresh)]
@@ -334,10 +480,12 @@ if app_mode == "Bulk Averages Calculator":
                     with tab_preview_bowl: st.dataframe(bowling_avgs.head(50), width="stretch", hide_index=True)
                     
                     st.divider()
-                    file_out_name = f"{domain.replace('s', '')}_Season_Averages_All_Leagues_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
+                    prefix = domain.replace("'", "")
+                    file_out_name = f"{prefix}_Season_Averages_All_Leagues_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
                     st.download_button("📥 Download Output Excel File", data=output_buffer.getvalue(), file_name=file_out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")
                 except Exception as e:
-                    st.error(f"An error occurred during processing: {str(e)}")
+                    import traceback
+                    st.error(f"An error occurred during processing: {str(e)}\n\n```\n{traceback.format_exc()}\n```")
 
 # ==========================================
 # TOOL 2: LEAGUE MILESTONES REPORT

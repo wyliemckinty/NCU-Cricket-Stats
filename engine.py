@@ -10,6 +10,7 @@ import zipfile
 from datetime import datetime, timedelta
 from thefuzz import process, fuzz
 import warnings
+import streamlit as st
 
 warnings.filterwarnings('ignore')
 
@@ -97,6 +98,31 @@ KNOWN_DUPLICATES = {
 }
 
 # ==========================================
+# STANDARDIZED CACHED FILE LOADERS
+# ==========================================
+@st.cache_data(show_spinner="Loading data file...")
+def cached_read_excel(filepath, mtime):
+    if not os.path.exists(filepath):
+        return pd.DataFrame()
+    return pd.read_excel(filepath)
+
+@st.cache_data(show_spinner="Loading sheet...")
+def cached_read_excel_sheet(filepath, mtime, sheet_name=None, header='infer'):
+    if not os.path.exists(filepath):
+        return pd.DataFrame()
+    return pd.read_excel(filepath, sheet_name=sheet_name, header=header)
+
+def get_excel_df(filepath):
+    if not filepath or not os.path.exists(filepath):
+        return pd.DataFrame()
+    return cached_read_excel(filepath, os.path.getmtime(filepath))
+
+def get_excel_sheet_df(filepath, sheet_name=None, header='infer'):
+    if not filepath or not os.path.exists(filepath):
+        return pd.DataFrame()
+    return cached_read_excel_sheet(filepath, os.path.getmtime(filepath), sheet_name=sheet_name, header=header)
+
+# ==========================================
 # UNIFIED ENGINE FUNCTIONS 
 # ==========================================
 def build_alias_map(aliases, domain):
@@ -156,32 +182,46 @@ def cleanse_name_contextual(name, row, alias_map, player_club_map=None):
     group_lower = str(row.get('Group', row.get('Match', ''))).lower()
     row_team = str(row.get('Team', '')).lower()
     
+    clean_group = clean_club_for_matching(group_lower)
+    clean_row_team = clean_club_for_matching(row_team)
+    
     if original_name_lower == 'callum weir':
-        if 'derriaghy' in group_lower or 'derriaghy' in row_team:
+        if 'derriaghy' in group_lower or 'derriaghy' in row_team or 'derriaghy' in clean_group:
             return 'John Weir'
-        elif 'cliftonville' in group_lower or 'cliftonville academy' in group_lower or 'cliftonville' in row_team:
+        elif 'cliftonville' in group_lower or 'cliftonville academy' in group_lower or 'cliftonville' in row_team or 'cliftonville' in clean_group:
             return 'Callum Weir'
             
     for dup_name, clubs in KNOWN_DUPLICATES.items():
         if original_name_lower == dup_name.lower():
-            matched_clubs = [club for club in clubs if club.lower() in group_lower]
+            matched_clubs = []
+            for club in clubs:
+                c_clean = clean_club_for_matching(club)
+                c_tokens = set(c_clean.split())
+                grp_tokens = set(clean_group.split())
+                if (club.lower() in group_lower or 
+                    c_clean in clean_group or 
+                    (c_tokens and c_tokens.issubset(grp_tokens))):
+                    matched_clubs.append(club)
             
             if len(matched_clubs) == 1:
                 return f"{original_name} ({matched_clubs[0]})"
             elif len(matched_clubs) > 1:
                 for club in matched_clubs:
-                    if club.lower() in row_team:
+                    c_clean = clean_club_for_matching(club)
+                    if club.lower() in row_team or c_clean in clean_row_team:
                         return f"{original_name} ({club})"
                 return f"{original_name} ({matched_clubs[0]})"
             else:
                 for club in clubs:
-                    if club.lower() in row_team:
+                    c_clean = clean_club_for_matching(club)
+                    if club.lower() in row_team or c_clean in clean_row_team:
                         return f"{original_name} ({club})"
                 
                 if player_club_map:
                     reg_club = str(player_club_map.get(original_name_lower, '')).lower()
                     for club in clubs:
-                        if club.lower() in reg_club:
+                        c_clean = clean_club_for_matching(club)
+                        if club.lower() in reg_club or c_clean in reg_club:
                             return f"{original_name} ({club})"
                 
     return alias_map.get(original_name_lower, original_name)
@@ -215,23 +255,22 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None):
                 break
     
     for _, r in reg_players.iterrows():
-        reg_club = None
-        
+        clubs_found = []
         if 'Individual Membership Primary Club' in reg_players.columns and pd.notna(r['Individual Membership Primary Club']):
             val = str(r['Individual Membership Primary Club']).strip()
             if val.lower() != 'nan' and val != '':
-                reg_club = val
+                clubs_found.append(val)
         
-        if not reg_club:
-            for keyword in ['Primary Club', 'Transfer', 'Wylie', 'Club']:
-                cols = [c for c in reg_players.columns if keyword in str(c)]
-                for col in cols:
-                    if pd.notna(r[col]) and str(r[col]).strip() and str(r[col]).lower() != 'nan':
-                        reg_club = str(r[col]).strip()
-                        break
-                if reg_club: break
+        for keyword in ['Primary Club', 'Transfer', 'Wylie', 'Club']:
+            cols = [c for c in reg_players.columns if keyword in str(c) and c != 'Individual Membership Primary Club']
+            for col in cols:
+                if pd.notna(r[col]) and str(r[col]).strip() and str(r[col]).lower() != 'nan':
+                    val = str(r[col]).strip()
+                    if val not in clubs_found:
+                        clubs_found.append(val)
 
-        if reg_club:
+        if clubs_found:
+            reg_club = " / ".join(clubs_found)
             for c in name_cols:
                 if pd.notna(r[c]):
                     r_name = str(r[c]).replace('‡', '').strip().lower()
@@ -256,6 +295,114 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None):
                     club_map[p_name] = p_club
                         
     return club_map
+
+def extract_base_club_name(team_name):
+    if pd.isna(team_name): return "Unknown Club"
+    t = str(team_name).strip()
+    t = re.sub(r'(?i)\b\d(?:st|nd|rd|th)?\s*XI\b', '', t)
+    t = re.sub(r'(?i)\b(?:1st|2nd|3rd|4th|5th|6th|7th)\b', '', t)
+    t = re.sub(r'(?i)\bWomen\'?s?\b', '', t)
+    t = re.sub(r'(?i)\bMW\d?\b', '', t)
+    t = re.sub(r'(?i)\bCricket Club\b|\bCC\b', '', t)
+    t = re.sub(r'\s+\d$', '', t.strip())
+    t = re.sub(r'\s+', ' ', t).strip()
+    t = re.sub(r'(?i)\bciyms\b', 'CI', t)
+    t = re.sub(r'(?i)\bholywood\s+1881\b', 'Holywood', t)
+    t = re.sub(r'(?i)\bdrumaness\s+super\s*kings\b', 'Drumaness', t)
+    t = re.sub(r'(?i)\bdonaghcloney\b', 'Donacloney', t)
+    return t if t else "Unknown Club"
+
+def build_player_fixture_club_counts(batting_df, bowling_df, alias_map=None):
+    from collections import defaultdict
+    apps = []
+    if batting_df is not None and not batting_df.empty:
+        name_col = 'Cleaned Name' if 'Cleaned Name' in batting_df.columns else ('Name' if 'Name' in batting_df.columns else batting_df.columns[0])
+        sub = batting_df[[name_col, 'Group']].copy().rename(columns={name_col: 'Player'})
+        apps.append(sub)
+    if bowling_df is not None and not bowling_df.empty:
+        name_col = 'Cleaned Name' if 'Cleaned Name' in bowling_df.columns else ('Bowler' if 'Bowler' in bowling_df.columns else bowling_df.columns[0])
+        sub = bowling_df[[name_col, 'Group']].copy().rename(columns={name_col: 'Player'})
+        apps.append(sub)
+        
+    if not apps: return {}
+    all_apps = pd.concat(apps, ignore_index=True).drop_duplicates(subset=['Player', 'Group'])
+    player_fixture_clubs = defaultdict(lambda: defaultdict(int))
+    for _, r in all_apps.iterrows():
+        p = str(r['Player']).strip().lower()
+        p_mapped = str(alias_map.get(p, p)).strip().lower() if alias_map else p
+        grp = str(r['Group'])
+        if ' v ' in grp:
+            t1, t2 = extract_teams_from_group(grp)
+            c1, c2 = extract_base_club_name(t1), extract_base_club_name(t2)
+            if c1 != 'Unknown Club': 
+                player_fixture_clubs[p_mapped][c1.lower()] += 1
+                if p != p_mapped:
+                    player_fixture_clubs[p][c1.lower()] += 1
+            if c2 != 'Unknown Club': 
+                player_fixture_clubs[p_mapped][c2.lower()] += 1
+                if p != p_mapped:
+                    player_fixture_clubs[p][c2.lower()] += 1
+    return player_fixture_clubs
+
+def infer_unregistered_player_clubs(batting_df, bowling_df, player_club_map, min_matches=2):
+    from collections import defaultdict
+    if player_club_map is None:
+        player_club_map = {}
+    apps = []
+    if batting_df is not None and not batting_df.empty:
+        name_col = 'Cleaned Name' if 'Cleaned Name' in batting_df.columns else ('Name' if 'Name' in batting_df.columns else batting_df.columns[0])
+        sub = batting_df[[name_col, 'Group']].copy().rename(columns={name_col: 'Player'})
+        if 'Team' in batting_df.columns: sub['Team'] = batting_df['Team']
+        apps.append(sub)
+    if bowling_df is not None and not bowling_df.empty:
+        name_col = 'Cleaned Name' if 'Cleaned Name' in bowling_df.columns else ('Bowler' if 'Bowler' in bowling_df.columns else bowling_df.columns[0])
+        sub = bowling_df[[name_col, 'Group']].copy().rename(columns={name_col: 'Player'})
+        if 'Team' in bowling_df.columns: sub['Team'] = bowling_df['Team']
+        apps.append(sub)
+        
+    if not apps: return player_club_map
+    
+    all_apps = pd.concat(apps, ignore_index=True).drop_duplicates(subset=['Player', 'Group'])
+    
+    for player, grp in all_apps.groupby('Player'):
+        p_clean = str(player).split(' (')[0].strip().lower()
+        if p_clean in player_club_map or str(player).strip().lower() in player_club_map:
+            continue
+        
+        if len(grp) >= min_matches:
+            club_counts = defaultdict(int)
+            teams_in_fixtures = []
+            
+            for _, r in grp.iterrows():
+                row_t = str(r.get('Team', '')).strip()
+                if row_t and row_t.lower() != 'nan':
+                    b_club = extract_base_club_name(row_t)
+                    if b_club != "Unknown Club":
+                        club_counts[b_club] += 1
+                
+                grp_str = str(r.get('Group', ''))
+                if ' v ' in grp_str:
+                    t1, t2 = extract_teams_from_group(grp_str)
+                    c1, c2 = extract_base_club_name(t1), extract_base_club_name(t2)
+                    teams_in_fixtures.append({c1.lower(), c2.lower()})
+            
+            inferred_club = None
+            if club_counts:
+                top_club, count = sorted(club_counts.items(), key=lambda x: x[1], reverse=True)[0]
+                if count >= min_matches or (count / len(grp)) >= 0.5:
+                    inferred_club = top_club
+            
+            if not inferred_club and teams_in_fixtures:
+                common = set.intersection(*teams_in_fixtures)
+                common.discard('unknown club')
+                if len(common) == 1:
+                    inferred_club = list(common)[0].title()
+            
+            if inferred_club:
+                player_club_map[p_clean] = inferred_club
+                player_club_map[str(player).strip().lower()] = inferred_club
+
+    return player_club_map
 
 def build_league_dict(league_structure):
     league_dict = {}
@@ -299,7 +446,10 @@ def clean_team_for_compare(t, domain):
     return " ".join(t.split())
 
 def get_team_league(team_name, team_keys, league_dict, domain):
+    if pd.isna(team_name): return None
     clean_search_name = re.sub(r',.*', '', str(team_name)).strip()
+    if clean_search_name.startswith("Unknown") or "Unknown (" in clean_search_name or clean_search_name == "Unknown Team":
+        return None
     for k in team_keys:
         if k.lower() == clean_search_name.lower(): return league_dict[k]
     team_clean = clean_team_for_compare(clean_search_name, domain)
@@ -323,7 +473,9 @@ def get_team_league(team_name, team_keys, league_dict, domain):
 
 def format_display_team(team_str, domain):
     if pd.isna(team_str): return "Unknown"
-    c = str(team_str)
+    c = str(team_str).strip()
+    if c.startswith("Unknown (") and c.endswith(")"):
+        return c
     if domain == "Midweek":
         c = re.sub(r'(?i)\bmw1\s*xi\b', ' 1', c)
         c = re.sub(r'(?i)\bmw2\s*xi\b', ' 2', c)
@@ -371,74 +523,82 @@ def clean_club_for_matching(club_str):
     c = re.sub(r'(?i)donaghcloney', 'donacloney', c)
     return " ".join(c.split())
 
-def determine_player_team_for_row(row, player_club_map, domain, secondary_map=None):
-    player = str(row.get('Cleaned Name', row.get('Player', ''))).strip()
+def determine_player_team_for_row(row, player_club_map, domain, secondary_map=None, player_fixture_clubs=None, alias_map=None):
+    player = str(row.get('Cleaned Name', row.get('Player', row.get('Name', row.get('Bowler', ''))))).strip()
     group_str = str(row.get('Group', row.get('Match', '')))
     t1, t2 = extract_teams_from_group(group_str)
+    if not t1 or t1 == "Unknown" or not t2 or t2 == "Unknown":
+        return f"Unknown ({t1} v {t2})"
+
+    c1_base = extract_base_club_name(t1).lower()
+    c2_base = extract_base_club_name(t2).lower()
     
-    clean_t1_cmp = clean_team_for_compare(t1, domain)
-    clean_t2_cmp = clean_team_for_compare(t2, domain)
+    clean_t1_match = clean_club_for_matching(t1)
+    clean_t2_match = clean_club_for_matching(t2)
     
     if '(' in player and player.endswith(')'):
         club_hint = player.split('(')[-1].replace(')', '').strip().lower()
         clean_hint = clean_club_for_matching(club_hint)
-        clean_t1_match = clean_club_for_matching(t1)
-        clean_t2_match = clean_club_for_matching(t2)
-        
         if clean_hint in clean_t1_match or club_hint in t1.lower(): return t1
         if clean_hint in clean_t2_match or club_hint in t2.lower(): return t2
 
-    base_player = player.split(' (')[0].strip().lower()
+    base_p = player.split(' (')[0].strip().lower()
+    mapped_p = str(alias_map.get(base_p, base_p)).strip().lower() if alias_map else base_p
+    
     if domain != "Women's":
-        if base_player in ['neil brand', 'sandeep singh']:
+        if mapped_p in ['neil brand', 'sandeep singh']:
             return t1 if 'muckamore' in t1.lower() else (t2 if 'muckamore' in t2.lower() else t1)
-        if base_player == 'james shannon':
-            if 'holywood' in t1.lower() or 'holywood' in t2.lower():
-                return t1 if 'holywood' in t1.lower() else t2
-            elif 'saintfield' in t1.lower() or 'saintfield' in t2.lower():
-                return t1 if 'saintfield' in t1.lower() else t2
+        if mapped_p == 'james shannon':
+            if 'holywood' in t1.lower() or 'holywood' in t2.lower(): return t1 if 'holywood' in t1.lower() else t2
+            elif 'saintfield' in t1.lower() or 'saintfield' in t2.lower(): return t1 if 'saintfield' in t1.lower() else t2
 
+    known_clubs = set()
+    
+    # 1. Registered / Transferred Clubs
+    reg_val = (player_club_map.get(mapped_p) or player_club_map.get(base_p)) if player_club_map else None
+    if reg_val and str(reg_val).lower() != 'nan':
+        for chunk in str(reg_val).split('/'):
+            c_clean = extract_base_club_name(chunk).lower()
+            if c_clean and c_clean != 'unknown club':
+                known_clubs.add(c_clean)
+
+    # 2. Secondary Map
     if secondary_map:
-        sec_teams = secondary_map.get(base_player, [])
-        for st_team in sec_teams:
-            clean_st = clean_club_for_matching(st_team)
-            clean_t1_match = clean_club_for_matching(t1)
-            clean_t2_match = clean_club_for_matching(t2)
-            
-            if clean_st in clean_t1_match or clean_t1_match in clean_st: return t1
-            if clean_st in clean_t2_match or clean_t2_match in clean_st: return t2
-            
-            st_tokens = set(clean_st.split())
-            t1_tokens = set(clean_t1_match.split())
-            t2_tokens = set(clean_t2_match.split())
-            
-            if len(st_tokens.intersection(t1_tokens)) > len(st_tokens.intersection(t2_tokens)): return t1
-            elif len(st_tokens.intersection(t2_tokens)) > len(st_tokens.intersection(t1_tokens)): return t2
+        sec_teams = secondary_map.get(mapped_p) or secondary_map.get(base_p) or []
+        for st in sec_teams:
+            c_clean = extract_base_club_name(st).lower()
+            if c_clean and c_clean != 'unknown club':
+                known_clubs.add(c_clean)
 
-    reg_club = player_club_map.get(base_player)
-    if reg_club and str(reg_club).lower() != 'nan':
-        clean_reg = clean_club_for_matching(reg_club)
-        clean_t1_match = clean_club_for_matching(t1)
-        clean_t2_match = clean_club_for_matching(t2)
+    # 3. Fixture Appearance Frequency (>= 2 matches)
+    counts = {}
+    if player_fixture_clubs:
+        counts = player_fixture_clubs.get(mapped_p) or player_fixture_clubs.get(base_p) or {}
+        for club, cnt in counts.items():
+            if cnt >= 2:
+                known_clubs.add(club)
+                
+    t1_matches = any(kc in clean_t1_match or clean_t1_match in kc or kc == c1_base for kc in known_clubs)
+    t2_matches = any(kc in clean_t2_match or clean_t2_match in kc or kc == c2_base for kc in known_clubs)
+    
+    if t1_matches and not t2_matches:
+        return t1
+    elif t2_matches and not t1_matches:
+        return t2
+    elif t1_matches and t2_matches:
+        c1_cnt = counts.get(c1_base, 0)
+        c2_cnt = counts.get(c2_base, 0)
+        if c1_cnt > c2_cnt: return t1
+        elif c2_cnt > c1_cnt: return t2
+        return t1
         
-        if clean_reg in clean_t1_match or clean_t1_match in clean_reg: return t1
-        if clean_reg in clean_t2_match or clean_t2_match in clean_reg: return t2
-        
-        reg_tokens = set(clean_reg.split())
-        stop_words = {'1st', '2nd', '3rd', '4th', '5th', '6th', '7th', '8th', 'xi', '1', '2', '3', '4', '5', '6', '7', '8', 'women', 'womens', "women's", 'mw', 'mw1', 'mw2', 'mw3'}
-        t1_tokens_clean = set(clean_t1_match.split()) - stop_words
-        t2_tokens_clean = set(clean_t2_match.split()) - stop_words
-        
-        if len(reg_tokens.intersection(t1_tokens_clean)) > len(reg_tokens.intersection(t2_tokens_clean)): return t1
-        elif len(reg_tokens.intersection(t2_tokens_clean)) > len(reg_tokens.intersection(t1_tokens_clean)): return t2
-
-    row_team = str(row.get('Team', '')).strip().lower()
-    if row_team and row_team != 'nan':
-        clean_row_t = clean_team_for_compare(row_team, domain)
-        if clean_row_t in clean_t1_cmp or clean_t1_cmp in clean_row_t: return t1
-        if clean_row_t in clean_t2_cmp or clean_t2_cmp in clean_row_t: return t2
-        
-    return t1
+    if t1 and t1 != "Unknown" and t2 and t2 != "Unknown":
+        return f"Unknown ({t1} v {t2})"
+    elif t1 and t1 != "Unknown":
+        return t1
+    elif t2 and t2 != "Unknown":
+        return t2
+    return "Unknown Team"
 
 def parse_high_score(scores_series):
     best_score = 0
@@ -457,14 +617,16 @@ def parse_high_score(scores_series):
     if best_score == 0 and not is_not_out: return "0"
     return f"{best_score}*" if is_not_out else str(best_score)
 
-def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, league_dict, domain, bat_sort="Runs", bowl_sort="Wickets", secondary_map=None):
+def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, league_dict, domain, bat_sort="Runs", bowl_sort="Wickets", secondary_map=None, alias_map=None, _cache_version=None):
     for col in ['Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes']:
         if col in batting_df.columns: batting_df[col] = pd.to_numeric(batting_df[col], errors='coerce').fillna(0)
     for col in ['Innings', 'Balls', 'Maidens', 'Runs', 'Wickets']:
         if col in bowling_df.columns: bowling_df[col] = pd.to_numeric(bowling_df[col], errors='coerce').fillna(0)
             
-    batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map), axis=1)
-    bowling_df['Team Played For'] = bowling_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map), axis=1)
+    player_fixture_clubs = build_player_fixture_club_counts(batting_df, bowling_df, alias_map=alias_map)
+    
+    batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
+    bowling_df['Team Played For'] = bowling_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
     
     def apply_league(t):
         league = get_team_league(t, team_keys, league_dict, domain)
@@ -494,7 +656,7 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
 
     def group_bowling(df_to_group, bat_avgs):
         sorted_df = df_to_group.sort_values(by=['Wickets', 'Runs'], ascending=[False, True])
-        best_spells = sorted_df.drop_duplicates(subset=['League', 'Cleaned Name'])
+        best_spells = sorted_df.drop_duplicates(subset=['League', 'Cleaned Name']).copy()
         best_spells['Best Bowling'] = best_spells['Wickets'].fillna(0).astype(int).astype(str) + '-' + best_spells['Runs'].fillna(0).astype(int).astype(str)
         bbi_series = best_spells.set_index(['League', 'Cleaned Name'])['Best Bowling']
         
@@ -645,7 +807,9 @@ def doc_get_player_team_from_match(match_str, base_club):
     
     if str(base_club).lower() in team1.lower(): return team1
     if str(base_club).lower() in team2.lower(): return team2
-    return "Other Team"
+    if team1 != "Unknown" and team2 != "Unknown":
+        return f"Unknown ({team1} v {team2})"
+    return "Unknown Team"
 
 def doc_team_sort_key(team_name):
     words = team_name.split()
@@ -718,12 +882,29 @@ def get_player_aliases(official_name, aliases):
 
 
 def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain, aliases_list=None, player_abandoned=None):
+    player_batting = player_batting.copy() if player_batting is not None and not player_batting.empty else pd.DataFrame()
+    player_bowling = player_bowling.copy() if player_bowling is not None and not player_bowling.empty else pd.DataFrame()
     club_name = "Unknown_Club"
     if active_player.lower() == 'neil brand' and domain != "Women's":
         club_name = 'Muckamore'
     else:
         reg_search_name = active_player.split(' (')[0] if ' (' in active_player else active_player
-        reg_match = reg_players_df[reg_players_df['Full Name'].astype(str).str.lower() == reg_search_name.lower()]
+        reg_match = pd.DataFrame()
+        if reg_players_df is not None and not reg_players_df.empty:
+            if '_computed_name' in reg_players_df.columns:
+                reg_match = reg_players_df[reg_players_df['_computed_name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+            elif 'Full Name' in reg_players_df.columns:
+                reg_match = reg_players_df[reg_players_df['Full Name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+            elif 'First Name' in reg_players_df.columns and 'Last Name' in reg_players_df.columns:
+                comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Last Name'].astype(str).str.strip()).str.lower()
+                reg_match = reg_players_df[comp_names == reg_search_name.lower()]
+            elif 'First Name' in reg_players_df.columns and 'Surname' in reg_players_df.columns:
+                comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Surname'].astype(str).str.strip()).str.lower()
+                reg_match = reg_players_df[comp_names == reg_search_name.lower()]
+            else:
+                name_col = next((c for c in reg_players_df.columns if 'name' in str(c).lower()), reg_players_df.columns[0])
+                reg_match = reg_players_df[reg_players_df[name_col].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+
         if not reg_match.empty:
             for keyword in ['Wylie', 'Transfer']:
                 cols = [c for c in reg_match.columns if keyword in str(c)]
@@ -736,7 +917,13 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                     club_name = str(reg_match[primary_cols[0]].dropna().values[0]).strip()
                     
     if club_name == "Unknown_Club":
-        all_groups_fallback = pd.concat([player_batting['Group'], player_bowling['Group']]).dropna().tolist()
+        groups_to_concat = []
+        if player_batting is not None and not player_batting.empty and 'Group' in player_batting.columns:
+            groups_to_concat.append(player_batting['Group'])
+        if player_bowling is not None and not player_bowling.empty and 'Group' in player_bowling.columns:
+            groups_to_concat.append(player_bowling['Group'])
+        all_groups_fallback = pd.concat(groups_to_concat).dropna().tolist() if groups_to_concat else []
+        
         team_frequency = {}
         for grp in all_groups_fallback:
             if ' v ' in grp:
@@ -744,17 +931,23 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                 t1, t2 = doc_format_cricket_names(t1, domain), doc_format_cricket_names(t2, domain)
                 team_frequency[t1] = team_frequency.get(t1, 0) + 1
                 team_frequency[t2] = team_frequency.get(t2, 0) + 1
-        if team_frequency: club_name = sorted(team_frequency.items(), key=lambda x: x[1], reverse=True)[0][0]
+        
+        if team_frequency:
+            sorted_teams = sorted(team_frequency.items(), key=lambda x: x[1], reverse=True)
+            if len(sorted_teams) > 1 and sorted_teams[0][1] > sorted_teams[1][1] and sorted_teams[0][1] > 1:
+                club_name = sorted_teams[0][0]
     
     if ' (' in active_player: club_name = active_player.split(' (')[1].replace(')', '')
     club_name_clean = doc_format_cricket_names(club_name, domain)
 
-    if not player_batting.empty: player_batting['Team'] = player_batting['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
-    if not player_bowling.empty: player_bowling['Team'] = player_bowling['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
+    if not player_batting.empty and 'Group' in player_batting.columns:
+        player_batting['Team'] = player_batting['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
+    if not player_bowling.empty and 'Group' in player_bowling.columns:
+        player_bowling['Team'] = player_bowling['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
         
     unique_teams = set()
-    if not player_batting.empty: unique_teams.update(player_batting['Team'].unique())
-    if not player_bowling.empty: unique_teams.update(player_bowling['Team'].unique())
+    if not player_batting.empty and 'Team' in player_batting.columns: unique_teams.update(player_batting['Team'].unique())
+    if not player_bowling.empty and 'Team' in player_bowling.columns: unique_teams.update(player_bowling['Team'].unique())
     
     if player_abandoned is not None and not player_abandoned.empty:
         ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
@@ -764,8 +957,8 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     unique_teams = sorted(list(unique_teams), key=doc_team_sort_key)
 
     all_groups = []
-    if not player_batting.empty: all_groups.extend(player_batting['Group'].tolist())
-    if not player_bowling.empty: all_groups.extend(player_bowling['Group'].tolist())
+    if not player_batting.empty and 'Group' in player_batting.columns: all_groups.extend(player_batting['Group'].tolist())
+    if not player_bowling.empty and 'Group' in player_bowling.columns: all_groups.extend(player_bowling['Group'].tolist())
     if player_abandoned is not None and not player_abandoned.empty:
         ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
         all_groups.extend(player_abandoned[ab_match_col].tolist())
@@ -899,14 +1092,33 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         bowl_matches = max(bat_m_raw, int(team_bowl['Matches'].sum()))
         
         bowl_innings = int(team_bowl['Innings'].sum())
-        overs, maidens = round(team_bowl['Overs'].sum(), 1), int(team_bowl['Maidens'].sum())
-        bowl_runs, wickets = int(team_bowl['Runs'].sum()), int(team_bowl['Wickets'].sum())
+        maidens = int(team_bowl['Maidens'].sum()) if 'Maidens' in team_bowl.columns else 0
+        bowl_runs = int(team_bowl['Runs'].sum()) if 'Runs' in team_bowl.columns else 0
+        wickets = int(team_bowl['Wickets'].sum()) if 'Wickets' in team_bowl.columns else 0
         bowl_avg = f"{bowl_runs / wickets:.2f}" if wickets > 0 else "N/A"
+
+        if 'Balls' in team_bowl.columns and team_bowl['Balls'].sum() > 0:
+            total_balls = int(team_bowl['Balls'].sum())
+        else:
+            total_balls = 0
+            for o_val in team_bowl['Overs'].dropna():
+                try:
+                    o_float = float(o_val)
+                    whole_overs = int(o_float)
+                    o_str = f"{o_float:.1f}"
+                    balls_part = int(o_str.split('.')[1]) if '.' in o_str else 0
+                    total_balls += (whole_overs * 6) + min(balls_part, 5)
+                except (ValueError, IndexError):
+                    pass
+
+        total_completed_overs = total_balls // 6
+        extra_balls = total_balls % 6
+        overs_display = f"{total_completed_overs}.{extra_balls}" if extra_balls > 0 else str(total_completed_overs)
 
         add_custom_heading(doc, team, level=3)
         add_bullet_point(doc, f"Matches: {bowl_matches}")
         add_bullet_point(doc, f"Innings: {bowl_innings}")
-        add_bullet_point(doc, f"Overs: {overs}")
+        add_bullet_point(doc, f"Overs: {overs_display}")
         add_bullet_point(doc, f"Maidens: {maidens}")
         add_bullet_point(doc, f"Runs Conceded: {bowl_runs}")
         add_bullet_point(doc, f"Wickets: {wickets}")
@@ -1173,6 +1385,7 @@ def export_and_format_excel(df, writer, sheet_name):
         if col_name in ['Stats Name (Cleaned)', 'Player (Cleaned)']: worksheet.set_column(col_num, col_num, max_width, bold_name_format)
         else: worksheet.set_column(col_num, col_num, max_width)
 
+@st.cache_data(show_spinner="Running registration & starring audit...")
 def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_cup=None, f_abandoned=None):
     registered_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
@@ -1293,6 +1506,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         unreg_df = pd.read_excel(f_unreg)
         
     player_club_map = build_player_club_map(registered_players, alias_map, domain, unreg_map_df=unreg_df) 
+    player_club_map = infer_unregistered_player_clubs(batting_stats, bowling_stats, player_club_map, min_matches=2)
     
     batting_stats['Cleaned Name'] = batting_stats.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
     bowling_stats['Cleaned Name'] = bowling_stats.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
@@ -1604,6 +1818,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
 # ==========================================
 # MIDWEEK REGISTRATION ENGINE
 # ==========================================
+@st.cache_data(show_spinner="Running midweek registration audit...")
 def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=None):
     registered_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
@@ -1647,6 +1862,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         unreg_df = pd.read_excel(f_unreg)
     
     player_club_map = build_player_club_map(registered_players, alias_map, "Midweek", unreg_map_df=unreg_df)
+    player_club_map = infer_unregistered_player_clubs(batting_stats, bowling_stats, player_club_map, min_matches=2)
     
     batting_stats['Cleaned Name'] = batting_stats.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
     bowling_stats['Cleaned Name'] = bowling_stats.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
@@ -1731,7 +1947,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                 
                 potential_matches = registered_players[registered_players[reg_name_col].str.strip().str.lower() == base_name.lower()]
                 if potential_matches.empty:
-                    best_match, score = process_extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
+                    best_match, score = process.extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
                     if score >= 90:
                         potential_matches = registered_players[registered_players[reg_name_col] == best_match]
                 
@@ -1750,7 +1966,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                 reg_record = registered_players[registered_players[reg_name_col].str.strip().str.lower() == player.lower()]
                 match_type, matched_name = "Exact", player
                 if reg_record.empty:
-                    best_match, score = process_extractOne(player, official_names, scorer=fuzz.token_sort_ratio)
+                    best_match, score = process.extractOne(player, official_names, scorer=fuzz.token_sort_ratio)
                     if score >= 90:
                         reg_record = registered_players[registered_players[reg_name_col] == best_match]
                         match_type, matched_name = f"Fuzzy ({score}%)", best_match
@@ -1812,10 +2028,12 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     div_lower = str(weekend_division).lower()
                     is_illegal = False
                     
-                    if 'premier' in div_lower or 'senior' in div_lower: is_illegal = True
+                    if 'premier' in div_lower or 'senior' in div_lower: 
+                        is_illegal = True
                     elif 'junior' in div_lower:
-                        match_num = re.search(r'junior(?: league)? (\d+)', div_lower)
-                        if match_num and int(match_num.group(1)) <= 3: is_illegal = True
+                        match_num = re.search(r'junior.*?(\d+)', div_lower)
+                        if match_num and int(match_num.group(1)) <= 3: 
+                            is_illegal = True
                             
                     if is_illegal:
                         violation_matches.add((team_a, team_b, determine_midweek_league(team_a, team_b), row['Match Date']))
@@ -2124,6 +2342,7 @@ def report_autofit_columns(ws):
             except Exception: pass
         ws.column_dimensions[column_letter].width = max_length + 2
 
+@st.cache_data(show_spinner="Generating starring inactivity reports...")
 def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_abandoned=None):
     df_reg = pd.read_excel(f_reg)
     df_alias = pd.read_excel(f_alias)
@@ -2929,6 +3148,7 @@ def generate_unregistered_fines_only(audit_file):
 # ==========================================
 # MILESTONES ENGINE SPECIFIC FUNCTIONS
 # ==========================================
+@st.cache_data(show_spinner="Generating milestones report...")
 def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup=None):
     reg_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
@@ -3229,3 +3449,102 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
     doc.save(doc_io)
     
     return doc_io
+
+# ==========================================
+# CLUB CONTACTS DIRECTORY ENGINE
+# ==========================================
+def get_contact_team_tier(role_name):
+    r = str(role_name).lower()
+    if "women's first" in r or "womens first" in r: return "Women's 1st XI"
+    if "women's second" in r or "womens second" in r: return "Women's 2nd XI"
+    if "women's third" in r or "womens third" in r: return "Women's 3rd XI"
+    if "first midweek" in r or "1st midweek" in r: return "1st Midweek XI"
+    if "second midweek" in r or "2nd midweek" in r: return "2nd Midweek XI"
+    if "first team" in r or "1st team" in r: return "1st XI"
+    if "second team" in r or "2nd team" in r: return "2nd XI"
+    if "third team" in r or "3rd team" in r: return "3rd XI"
+    if "fourth team" in r or "4th team" in r: return "4th XI"
+    if "fifth team" in r or "5th team" in r: return "5th XI"
+    if "sixth team" in r or "6th team" in r: return "6th XI"
+    if "boys" in r: return "Boys Youth"
+    if "girls" in r: return "Girls Youth"
+    if any(k in r for k in ["youth", "programme", "lead/coach"]): return "Youth & Coaching"
+    if "indoor" in r: return "Indoor Cricket"
+    return "Club Official"
+
+def parse_club_contacts_matrix(file_or_df):
+    """
+    Transforms the wide NCU Club Contacts sheet into a normalized DataFrame
+    while strictly preserving the source spreadsheet's top-to-bottom role sequence.
+    """
+    if isinstance(file_or_df, str):
+        if not os.path.exists(file_or_df):
+            return pd.DataFrame(), {}, []
+        excel_file = pd.ExcelFile(file_or_df)
+        sheet = "Club Contacts" if "Club Contacts" in excel_file.sheet_names else excel_file.sheet_names[0]
+        df = pd.read_excel(file_or_df, sheet_name=sheet)
+    elif isinstance(file_or_df, pd.DataFrame):
+        df = file_or_df
+    else:
+        df = pd.read_excel(file_or_df)
+
+    if df.empty:
+        return pd.DataFrame(), {}, []
+
+    role_col = df.columns[0]
+    clubs = [c for c in df.columns[1:] if not str(c).startswith("Unnamed")]
+    row_labels = df[role_col].tolist()
+
+    rows = []
+    grounds_by_club = {c: {} for c in clubs}
+    ordered_roles = []
+
+    i = 0
+    role_idx = 0
+    while i < len(row_labels):
+        label = str(row_labels[i]).strip()
+        if not label or label.lower() == "nan":
+            i += 1
+            continue
+
+        # Extract Ground records
+        if "Ground" in label and "Convenor" not in label:
+            for c in clubs:
+                val = df.iloc[i][c]
+                if pd.notna(val) and str(val).strip() and str(val).strip().lower() != "nan":
+                    grounds_by_club[c][label] = str(val).strip()
+            i += 1
+            continue
+
+        # Extract Role Block (Name, Email, Mobile)
+        if i + 2 < len(row_labels) and "email" in str(row_labels[i+1]).lower() and "mobile" in str(row_labels[i+2]).lower():
+            role_name = label
+            if role_name not in ordered_roles:
+                ordered_roles.append(role_name)
+            tier = get_contact_team_tier(role_name)
+            role_idx += 1
+
+            for c in clubs:
+                name_val = df.iloc[i][c]
+                em_val = df.iloc[i+1][c]
+                mob_val = df.iloc[i+2][c]
+
+                name_str = str(name_val).strip() if pd.notna(name_val) and str(name_val).strip().lower() != "nan" else ""
+                em_str = str(em_val).strip() if pd.notna(em_val) and str(em_val).strip().lower() != "nan" else ""
+                mob_str = str(mob_val).strip() if pd.notna(mob_val) and str(mob_val).strip().lower() != "nan" else ""
+
+                if name_str or em_str or mob_str:
+                    rows.append({
+                        "Club": c,
+                        "Role": role_name,
+                        "Role Order": role_idx,
+                        "Team Tier": tier,
+                        "Name": name_str,
+                        "Email": em_str,
+                        "Phone": mob_str
+                    })
+            i += 3
+        else:
+            i += 1
+
+    return pd.DataFrame(rows), grounds_by_club, ordered_roles
