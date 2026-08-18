@@ -112,12 +112,12 @@ with st.sidebar:
 # ==========================================
 # TOOL 1: BULK AVERAGES
 # ==========================================
-def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, include_t20):
+def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, include_t20, exclude_pathway=False):
     """
     Filters scorecard records according to Cup and T20 inclusion toggles
     with strict date matching and explicit League match protection.
     """
-    if include_cup and include_t20:
+    if include_cup and include_t20 and not exclude_pathway:
         return batting_df, bowling_df
 
     cup_match_set = set()  # Stores (team1, team2, date_YYYY-MM-DD)
@@ -219,6 +219,10 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
         return 'league'
 
     def should_keep(grp):
+        grp_lower = str(grp).lower()
+        if exclude_pathway and 'pathway' in grp_lower:
+            return False
+            
         m_type = classify_match(grp)
         if m_type == 't20' and not include_t20:
             return False
@@ -317,14 +321,16 @@ if app_mode == "Bulk Averages Calculator":
 
     st.divider()
     st.subheader("Match Inclusion & Threshold Settings")
-    colA, colB, colC = st.columns(3)
-    include_cup, include_t20 = True, True
+    colA, colB, colC, colD = st.columns(4)
+    include_cup, include_t20, exclude_pathway = True, True, False
     
     with colA:
         if domain in ["Men's", "Women's"]: include_cup = st.toggle("Include Cup Matches", value=True)
     with colB:
         if domain == "Men's": include_t20 = st.toggle("Include T20 Matches", value=True)
     with colC:
+        if domain == "Men's": exclude_pathway = st.toggle("Exclude Pathway XI Matches", value=False)
+    with colD:
         disable_thresholds = st.toggle("Set all target thresholds to 0", value=False, key="disable_thresholds", on_change=toggle_zero_thresholds)
 
     with st.sidebar:
@@ -375,7 +381,7 @@ if app_mode == "Bulk Averages Calculator":
                     # --- ADD THIS MATCH FORMAT FILTER ---
                     if domain in ["Men's", "Women's"]:
                         batting, bowling = filter_match_formats(
-                            batting, bowling, f_cup, domain, include_cup, include_t20
+                            batting, bowling, f_cup, domain, include_cup, include_t20, exclude_pathway
                         )
                     # -----------------------------------
 

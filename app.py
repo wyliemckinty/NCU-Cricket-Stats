@@ -25,6 +25,15 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
+# UI CUSTOMIZATION SETTINGS
+# ==========================================
+# Change these values to adjust text sizes in the Contacts Directory. 
+# You can use standard CSS sizes like "18px", "24px", "1.2rem", etc.
+UI_CLUB_HEADER_SIZE = "22px"
+UI_ROLE_TITLE_SIZE = "18px"
+UI_OFFICIAL_NAME_SIZE = "16px"
+
+# ==========================================
 # STREAMLIT CACHED EXCEL LOADERS
 # ==========================================
 def get_excel_df(filepath):
@@ -909,7 +918,8 @@ elif app_mode == "Club Contacts Directory":
                     filtered_view = club_matches
 
                 st.divider()
-                st.subheader(f"📌 {selected_club} — {selected_tier}")
+                # Using custom font size instead of st.subheader
+                st.markdown(f"<div style='font-size: {UI_CLUB_HEADER_SIZE}; font-weight: bold; padding-top: 1rem; padding-bottom: 1rem;'>📌 {selected_club} — {selected_tier}</div>", unsafe_allow_html=True)
 
                 if filtered_view.empty:
                     st.info(f"No contact records found for {selected_club} under {selected_tier}.")
@@ -924,8 +934,8 @@ elif app_mode == "Club Contacts Directory":
                                 phone_val = row.get('Phone', '')
                                 email_val = row.get('Email', '')
 
-                                st.markdown(f"### {role_title}")
-                                st.markdown(f"**👤 {official_name}**")
+                                st.markdown(f"<div style='font-size: {UI_ROLE_TITLE_SIZE}; font-weight: bold; margin-bottom: 0.25rem;'>{role_title}</div>", unsafe_allow_html=True)
+                                st.markdown(f"<div style='font-size: {UI_OFFICIAL_NAME_SIZE}; margin-bottom: 0.25rem;'>👤 <b>{official_name}</b></div>", unsafe_allow_html=True)
                                 st.markdown(f"**Category:** `{row.get('Team Tier', 'General')}`")
                                 st.markdown(format_tel_link(phone_val), unsafe_allow_html=True)
                                 st.markdown(format_mail_link(email_val), unsafe_allow_html=True)
@@ -954,7 +964,7 @@ elif app_mode == "Club Contacts Directory":
                     
                     display_table = role_df[['Club', 'Name', 'Direct Phone', 'Direct Email', 'Team Tier']].sort_values(by='Club')
                     st.markdown(
-                        display_table.to_html(escape=False, index=False), 
+                        display_table.to_html(escape=False, index=False, justify='left'), 
                         unsafe_allow_html=True
                     )
 
@@ -984,6 +994,6 @@ elif app_mode == "Club Contacts Directory":
                     matched_rows['Direct Email'] = matched_rows['Email'].apply(format_mail_link)
                     
                     st.markdown(
-                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False),
+                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False, justify='left'),
                         unsafe_allow_html=True
                     )

@@ -6,3 +6,7 @@ python-Levenshtein
 python-docx
 openpyxl
 xlsxwriter
+pytest
+pytest-mock
+
+python-calamine

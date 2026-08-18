@@ -14,6 +14,30 @@ import streamlit as st
 
 warnings.filterwarnings('ignore')
 
+# ==========================================
+# GLOBAL PANDAS OPTIMIZATION
+# ==========================================
+# Patch pandas to use the 'calamine' engine by default for all read_excel 
+# operations, which is up to 20x faster than the default openpyxl engine.
+if not hasattr(pd, '_original_read_excel'):
+    pd._original_read_excel = pd.read_excel
+    pd._original_excel_file = pd.ExcelFile
+
+    def fast_read_excel(*args, **kwargs):
+        if len(args) > 0 and type(args[0]).__name__ != 'ExcelFile' and 'engine' not in kwargs:
+            kwargs['engine'] = 'calamine'
+        elif 'io' in kwargs and type(kwargs['io']).__name__ != 'ExcelFile' and 'engine' not in kwargs:
+            kwargs['engine'] = 'calamine'
+        return pd._original_read_excel(*args, **kwargs)
+
+    def fast_excel_file(*args, **kwargs):
+        if 'engine' not in kwargs:
+            kwargs['engine'] = 'calamine'
+        return pd._original_excel_file(*args, **kwargs)
+
+    pd.read_excel = fast_read_excel
+    pd.ExcelFile = fast_excel_file
+
 try:
     from docx import Document
     from docx.shared import Pt, RGBColor
@@ -310,6 +334,7 @@ def extract_base_club_name(team_name):
     t = re.sub(r'(?i)\bholywood\s+1881\b', 'Holywood', t)
     t = re.sub(r'(?i)\bdrumaness\s+super\s*kings\b', 'Drumaness', t)
     t = re.sub(r'(?i)\bdonaghcloney\b', 'Donacloney', t)
+    t = re.sub(r'(?i)\bnimacc\b', 'NIMA', t)
     return t if t else "Unknown Club"
 
 def build_player_fixture_club_counts(batting_df, bowling_df, alias_map=None):
@@ -448,6 +473,7 @@ def clean_team_for_compare(t, domain):
 def get_team_league(team_name, team_keys, league_dict, domain):
     if pd.isna(team_name): return None
     clean_search_name = re.sub(r',.*', '', str(team_name)).strip()
+    clean_search_name = re.sub(r'(?i)\s*\(Pathway\)', '', clean_search_name).strip()
     if clean_search_name.startswith("Unknown") or "Unknown (" in clean_search_name or clean_search_name == "Unknown Team":
         return None
     for k in team_keys:
@@ -476,6 +502,14 @@ def format_display_team(team_str, domain):
     c = str(team_str).strip()
     if c.startswith("Unknown (") and c.endswith(")"):
         return c
+        
+    is_pathway = "(Pathway)" in c
+    c = re.sub(r'(?i)\s*\(Pathway\)', '', c).strip()
+    
+    # Strip formal club suffixes so that fallback matches seamlessly merge with standard scorecard entries
+    c = re.sub(r'(?i)\s*Cricket Club\b', '', c)
+    c = re.sub(r'(?i)\bCC\b', '', c)
+    
     if domain == "Midweek":
         c = re.sub(r'(?i)\bmw1\s*xi\b', ' 1', c)
         c = re.sub(r'(?i)\bmw2\s*xi\b', ' 2', c)
@@ -496,6 +530,9 @@ def format_display_team(team_str, domain):
         c = c.replace('Holywood', 'Holywood 1881')
     if domain == "Midweek" and not c.endswith(" MW"):
         c = f"{c} MW"
+        
+    if is_pathway:
+        return "NCU Pathway XI"
     return c
 
 def extract_teams_from_group(group_str):
@@ -581,16 +618,31 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
     t1_matches = any(kc in clean_t1_match or clean_t1_match in kc or kc == c1_base for kc in known_clubs)
     t2_matches = any(kc in clean_t2_match or clean_t2_match in kc or kc == c2_base for kc in known_clubs)
     
+    t1_is_pathway = 'pathway' in t1.lower()
+    t2_is_pathway = 'pathway' in t2.lower()
+    is_pathway_match = t1_is_pathway or t2_is_pathway
+
     if t1_matches and not t2_matches:
+        if t2_is_pathway: return t1
         return t1
     elif t2_matches and not t1_matches:
+        if t1_is_pathway: return t2
         return t2
     elif t1_matches and t2_matches:
+        if t2_is_pathway: return t1
+        if t1_is_pathway: return t2
         c1_cnt = counts.get(c1_base, 0)
         c2_cnt = counts.get(c2_base, 0)
         if c1_cnt > c2_cnt: return t1
         elif c2_cnt > c1_cnt: return t2
         return t1
+        
+    # If we couldn't match the teams, fallback to the player's officially registered club
+    if reg_val and str(reg_val).lower() != 'nan':
+        fallback_club = str(reg_val).split('/')[0].strip()
+        if is_pathway_match:
+            return f"{fallback_club} (Pathway)"
+        return fallback_club
         
     if t1 and t1 != "Unknown" and t2 and t2 != "Unknown":
         return f"Unknown ({t1} v {t2})"
@@ -640,10 +692,19 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
     batting_df['League'] = batting_df['Team Played For'].apply(apply_league)
     bowling_df['League'] = bowling_df['Team Played For'].apply(apply_league)
 
+    def combine_teams(team_series, domain):
+        if team_series.empty: return "Unknown"
+        teams = []
+        for t in team_series.unique():
+            fmt = format_display_team(t, domain)
+            if fmt != "Unknown" and fmt not in teams:
+                teams.append(fmt)
+        return " / ".join(teams) if teams else "Unknown"
+
     def group_batting(df_to_group):
         grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg({
             'Name': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
-            'Team Played For': lambda x: format_display_team(x.value_counts().index[0], domain) if not x.empty else "Unknown",
+            'Team Played For': lambda x: combine_teams(x, domain),
             'Matches': 'sum', 'Innings': 'sum', 'Not Outs': 'sum', 'Runs': 'sum',
             'Balls': 'sum', 'Fours': 'sum', 'Sixes': 'sum', 'High Score': parse_high_score
         }).reset_index()
@@ -662,7 +723,7 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         
         grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg({
             'Bowler': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
-            'Team Played For': lambda x: format_display_team(x.value_counts().index[0], domain) if not x.empty else "Unknown",
+            'Team Played For': lambda x: combine_teams(x, domain),
             'Innings': 'sum', 'Balls': 'sum', 'Maidens': 'sum', 'Runs': 'sum', 'Wickets': 'sum'
         }).reset_index()
         grouped = grouped.merge(bbi_series, on=['League', 'Cleaned Name'], how='left')
@@ -1495,7 +1556,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     df['Forename'] = df['Forename'].fillna('')
                     df['Full Name'] = (df['Forename'].astype(str).str.strip() + ' ' + df['Surname'].astype(str).str.strip()).str.replace('‡', '', regex=False).str.strip()
                     starring_data_list.append(df)
-            except Exception: pass
+            except Exception as e: print('EXCEPTION IN FINES:', repr(e))
         if starring_data_list: starring_df = pd.concat(starring_data_list, ignore_index=True)
 
     alias_map = build_alias_map(aliases, domain)
@@ -1851,7 +1912,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     df['Forename'] = df['Forename'].fillna('')
                     df['Full Name'] = (df['Forename'].astype(str).str.strip() + ' ' + df['Surname'].astype(str).str.strip()).str.replace('‡', '', regex=False).str.strip()
                     starring_data_list.append(df)
-            except Exception: pass
+            except Exception as e: print('EXCEPTION IN FINES:', repr(e))
         if starring_data_list: starring_df = pd.concat(starring_data_list, ignore_index=True)
 
     alias_map = build_alias_map(aliases, "Midweek")
@@ -2339,7 +2400,7 @@ def report_autofit_columns(ws):
             try:
                 if cell.value:
                     max_length = max(max_length, len(str(cell.value)))
-            except Exception: pass
+            except Exception as e: print('EXCEPTION IN FINES:', repr(e))
         ws.column_dimensions[column_letter].width = max_length + 2
 
 @st.cache_data(show_spinner="Generating starring inactivity reports...")
@@ -2493,7 +2554,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
                         cup_match_dict[f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}"] = cup_name
                     else:
                         cup_match_dict[f"{teams[0]}_{teams[1]}"] = cup_name
-        except Exception: pass
+        except Exception as e: print('EXCEPTION IN FINES:', repr(e))
 
     def apply_competition(grp_str, is_irish):
         try:
@@ -2691,7 +2752,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
                                                 if days_since > 21 and matches_since >= 3:
                                                     ws_log.cell(row=row_idx, column=reason_col_log).value = f"Inactive > 21 days ({days_since} days) and missed {matches_since} matches"
                                                     for col_idx in range(1, len(df_p_details.columns) + 1): ws_log.cell(row=row_idx, column=col_idx).fill = yellow_fill
-                            except Exception: pass 
+                            except Exception as e: print('EXCEPTION IN FINES:', repr(e)) 
                     report_autofit_columns(ws_log)
 
             zip_file.writestr(f"NCU_Master_Audit_{safe_club}.xlsx", club_io.getvalue())
@@ -2711,17 +2772,6 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
 # ==========================================
 # CLUB FINES GENERATOR FUNCTIONS
 # ==========================================
-def extract_base_club_name(team_name):
-    if pd.isna(team_name): return "Unknown Club"
-    t = str(team_name).strip()
-    t = re.sub(r'(?i)\b\d(?:st|nd|rd|th)?\s*XI\b', '', t)
-    t = re.sub(r'(?i)\b(?:1st|2nd|3rd|4th|5th|6th|7th)\b', '', t)
-    t = re.sub(r'(?i)\bWomen\'?s?\b', '', t)
-    t = re.sub(r'(?i)\bMW\d?\b', '', t)
-    t = re.sub(r'(?i)\bCricket Club\b|\bCC\b', '', t)
-    t = re.sub(r'\s+\d$', '', t.strip())
-    t = re.sub(r'\s+', ' ', t).strip()
-    return t if t else "Unknown Club"
 
 def format_fine_date(dt):
     if pd.isna(dt) or dt is None: return "N/A"
@@ -2795,14 +2845,14 @@ def generate_club_fines_report(audit_file, forfeit_file, start_date, end_date):
                     'Team_Part_Str': team_part_str,
                     'Competition': comp, 'Fine': fine, 'Type': 'Team'
                 })
-        except Exception: pass
+        except Exception as e: print('EXCEPTION IN FINES:', repr(e))
 
     if audit_file:
         try:
             excel_file = pd.ExcelFile(audit_file)
             
-            df_unreg = pd.read_excel(audit_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
-            df_deemed = pd.read_excel(audit_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
+            df_unreg = pd.read_excel(excel_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
+            df_deemed = pd.read_excel(excel_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
             
             player_true_team = {}
             if not df_unreg.empty:
@@ -2883,8 +2933,9 @@ def generate_club_fines_report(audit_file, forfeit_file, start_date, end_date):
                     })
                         
             if "Starring Violations" in excel_file.sheet_names:
-                df_star = pd.read_excel(audit_file, sheet_name="Starring Violations")
+                df_star = pd.read_excel(excel_file, sheet_name="Starring Violations")
                 if not df_star.empty and len(df_star.columns) > 1:
+                    print('DF_STAR MATCHES:', df_star.to_dict('records'))
                     for _, row in df_star.iterrows():
                         match_date = row.get('Match Date')
                         date_obj = pd.to_datetime(match_date) if pd.notna(match_date) else None
@@ -2905,9 +2956,9 @@ def generate_club_fines_report(audit_file, forfeit_file, start_date, end_date):
                             'Club': club, 'Date_obj': date_obj, 'Date_str': date_str,
                             'Reason': 'playing a starred player', 'Player': player,
                             'Team_Part_Str': team_part_str,
-                            'Competition': comp, 'Fine': 10, 'Type': 'Player'
+                            'Competition': comp, 'Fine': 25, 'Type': 'Player'
                         })
-        except Exception: pass
+        except Exception as e: print('EXCEPTION IN FINES:', repr(e))
 
     def sort_key(x):
         d = x['Date_obj'] if pd.notna(x['Date_obj']) and x['Date_obj'] is not None else datetime.min
@@ -2973,8 +3024,8 @@ def generate_unregistered_fines_only(audit_file):
         try:
             excel_file = pd.ExcelFile(audit_file)
             
-            df_unreg = pd.read_excel(audit_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
-            df_deemed = pd.read_excel(audit_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
+            df_unreg = pd.read_excel(excel_file, sheet_name="Unregistered Matches") if "Unregistered Matches" in excel_file.sheet_names else pd.DataFrame()
+            df_deemed = pd.read_excel(excel_file, sheet_name="Deemed Registered") if "Deemed Registered" in excel_file.sheet_names else pd.DataFrame()
             
             player_true_team = {}
             player_deemed_matches = defaultdict(list)
@@ -3071,7 +3122,7 @@ def generate_unregistered_fines_only(audit_file):
                         'Competition': comp, 'Fine': 10, 'Type': 'Player',
                         'Deemed_Matches': subsequent_matches
                     })
-        except Exception: pass
+        except Exception as e: print('EXCEPTION IN FINES:', repr(e))
 
     def sort_key(x):
         d = x['Date_obj'] if pd.notna(x['Date_obj']) and x['Date_obj'] is not None else datetime.min
@@ -3222,7 +3273,7 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
                         cup_match_dict[f"{teams[0]}_{teams[1]}_{c_date.strftime('%Y-%m-%d')}"] = cup_name
                     else:
                         cup_match_dict[f"{teams[0]}_{teams[1]}"] = cup_name
-        except Exception: pass
+        except Exception as e: print('EXCEPTION IN FINES:', repr(e))
         
     def is_cup_match(grp_str):
         grp_str_clean = str(grp_str).lower()
@@ -3480,13 +3531,13 @@ def parse_club_contacts_matrix(file_or_df):
     if isinstance(file_or_df, str):
         if not os.path.exists(file_or_df):
             return pd.DataFrame(), {}, []
-        excel_file = pd.ExcelFile(file_or_df)
+        excel_file = pd.ExcelFile(file_or_df, engine="calamine")
         sheet = "Club Contacts" if "Club Contacts" in excel_file.sheet_names else excel_file.sheet_names[0]
-        df = pd.read_excel(file_or_df, sheet_name=sheet)
+        df = pd.read_excel(file_or_df, sheet_name=sheet, engine="calamine")
     elif isinstance(file_or_df, pd.DataFrame):
         df = file_or_df
     else:
-        df = pd.read_excel(file_or_df)
+        df = pd.read_excel(file_or_df, engine="calamine")
 
     if df.empty:
         return pd.DataFrame(), {}, []
@@ -3499,6 +3550,7 @@ def parse_club_contacts_matrix(file_or_df):
     grounds_by_club = {c: {} for c in clubs}
     ordered_roles = []
 
+    df_dict = df.to_dict('list')
     i = 0
     role_idx = 0
     while i < len(row_labels):
@@ -3510,7 +3562,7 @@ def parse_club_contacts_matrix(file_or_df):
         # Extract Ground records
         if "Ground" in label and "Convenor" not in label:
             for c in clubs:
-                val = df.iloc[i][c]
+                val = df_dict[c][i]
                 if pd.notna(val) and str(val).strip() and str(val).strip().lower() != "nan":
                     grounds_by_club[c][label] = str(val).strip()
             i += 1
@@ -3525,9 +3577,9 @@ def parse_club_contacts_matrix(file_or_df):
             role_idx += 1
 
             for c in clubs:
-                name_val = df.iloc[i][c]
-                em_val = df.iloc[i+1][c]
-                mob_val = df.iloc[i+2][c]
+                name_val = df_dict[c][i]
+                em_val = df_dict[c][i+1]
+                mob_val = df_dict[c][i+2]
 
                 name_str = str(name_val).strip() if pd.notna(name_val) and str(name_val).strip().lower() != "nan" else ""
                 em_str = str(em_val).strip() if pd.notna(em_val) and str(em_val).strip().lower() != "nan" else ""
