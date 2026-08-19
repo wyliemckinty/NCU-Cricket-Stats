@@ -89,6 +89,18 @@ DEFAULT_FILES = {
     }
 }
 
+# Mapping of official club names to all abbreviations/variants used in NV Play data.
+# Used by resolve_duplicates to correctly identify which club a match belongs to.
+CLUB_ALIASES = {
+    'CI': ['CI', 'CIYMS'],
+    'CSNI': ['CSNI', 'Civil Service North', 'Civil Service North of Ireland'],
+    'BISC': ['BISC', 'Belfast International Sports Club'],
+    'NIMA': ['NIMA', 'NIMACC', 'NIMA CC', 'Northern Ireland Malayali Association'],
+    'Holywood': ['Holywood', 'Holywood 1881'],
+    'Ards & Donaghadee': ['Ards & Donaghadee', 'Ards', 'Ards and Donaghadee'],
+    'Donacloney Mill': ['Donacloney Mill', 'Donacloney', 'Donaghcloney'],
+}
+
 KNOWN_DUPLICATES = {
     'Adam Gardner': ['North Down', 'Carrickfergus'],
     'Adam Mcmaster': ['Templepatrick', 'Ballymena'],
@@ -108,7 +120,7 @@ KNOWN_DUPLICATES = {
     'James Shannon': ['Holywood', 'Saintfield'],
     'James Atkinson': ['Holywood', 'Armagh', 'Lisburn'],
     'David Kane': ['Dungannon', 'Templepatrick'],
-    'Andrew Holmes': ['CIYMS', 'CSNI'],
+    'Andrew Holmes': ['CI', 'CSNI'],
     'Timothy Scott': ['Saintfield', 'Ballymena'],
     'Gareth Thompson': ['CSNI', 'Lurgan'],
     'Harry Thompson': ['Derriaghy', 'Lurgan'],
@@ -214,39 +226,38 @@ def cleanse_name_contextual(name, row, alias_map, player_club_map=None):
             return 'John Weir'
         elif 'cliftonville' in group_lower or 'cliftonville academy' in group_lower or 'cliftonville' in row_team or 'cliftonville' in clean_group:
             return 'Callum Weir'
-            
     for dup_name, clubs in KNOWN_DUPLICATES.items():
         if original_name_lower == dup_name.lower():
+            combined_context = row_team + ' ' + group_lower
             matched_clubs = []
+            
             for club in clubs:
-                c_clean = clean_club_for_matching(club)
-                c_tokens = set(c_clean.split())
-                grp_tokens = set(clean_group.split())
-                if (club.lower() in group_lower or 
-                    c_clean in clean_group or 
-                    (c_tokens and c_tokens.issubset(grp_tokens))):
-                    matched_clubs.append(club)
+                variants = CLUB_ALIASES.get(club, [club])
+                for variant in variants:
+                    if re.search(r'\b' + re.escape(variant.lower()) + r'\b', combined_context):
+                        matched_clubs.append(club)
+                        break
             
             if len(matched_clubs) == 1:
                 return f"{original_name} ({matched_clubs[0]})"
             elif len(matched_clubs) > 1:
-                for club in matched_clubs:
-                    c_clean = clean_club_for_matching(club)
-                    if club.lower() in row_team or c_clean in clean_row_team:
-                        return f"{original_name} ({club})"
+                # If multiple clubs matched (e.g. playing against each other), try to break tie with row_team if it exists
+                if row_team:
+                    for club in matched_clubs:
+                        variants = CLUB_ALIASES.get(club, [club])
+                        for variant in variants:
+                            if re.search(r'\b' + re.escape(variant.lower()) + r'\b', row_team):
+                                return f"{original_name} ({club})"
                 return f"{original_name} ({matched_clubs[0]})"
             else:
-                for club in clubs:
-                    c_clean = clean_club_for_matching(club)
-                    if club.lower() in row_team or c_clean in clean_row_team:
-                        return f"{original_name} ({club})"
-                
+                # Fallback if no clubs matched in the context string
                 if player_club_map:
                     reg_club = str(player_club_map.get(original_name_lower, '')).lower()
                     for club in clubs:
                         c_clean = clean_club_for_matching(club)
                         if club.lower() in reg_club or c_clean in reg_club:
                             return f"{original_name} ({club})"
+                return f"{original_name} ({clubs[0]})"
                 
     return alias_map.get(original_name_lower, original_name)
 
@@ -332,9 +343,12 @@ def extract_base_club_name(team_name):
     t = re.sub(r'\s+', ' ', t).strip()
     t = re.sub(r'(?i)\bciyms\b', 'CI', t)
     t = re.sub(r'(?i)\bholywood\s+1881\b', 'Holywood', t)
+    t = re.sub(r'(?i)northern\s+ireland\s+malayali\s+association', 'NIMA', t)
+    t = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'NIMA', t)
+    t = re.sub(r'(?i)belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'BISC', t)
+    t = re.sub(r'(?i)civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'CSNI', t)
     t = re.sub(r'(?i)\bdrumaness\s+super\s*kings\b', 'Drumaness', t)
     t = re.sub(r'(?i)\bdonaghcloney\b', 'Donacloney', t)
-    t = re.sub(r'(?i)\bnimacc\b', 'NIMA', t)
     return t if t else "Unknown Club"
 
 def build_player_fixture_club_counts(batting_df, bowling_df, alias_map=None):
@@ -454,8 +468,13 @@ def extract_xi(team_str):
 def clean_team_for_compare(t, domain):
     t = str(t).lower()
     t = re.sub(r'\bcc\b|\bcricket club\b', '', t)
-    t = t.replace('1881', '').replace('ciyms', 'ci').replace('nimacc', 'nima').replace('dungannnon', 'dungannon')
+    t = t.replace('1881', '').replace('ciyms', 'ci').replace('dungannnon', 'dungannon')
+    t = re.sub(r'(?i)northern\s+ireland\s+malayali\s+association', 'nima', t)
+    t = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nima', t)
+    t = re.sub(r'(?i)belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'bisc', t)
+    t = re.sub(r'(?i)civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'csni', t)
     t = re.sub(r'(?i)drumaness\s+super\s*kings', 'drumaness', t)
+    t = re.sub(r'(?i)donaghcloney', 'donacloney', t)
     
     if domain == "Women's":
         t = re.sub(r'\bwomen\'s\b|\bwomens\b|\bwomen\b', '', t)
@@ -486,11 +505,11 @@ def get_team_league(team_name, team_keys, league_dict, domain):
         fallback_clean = clean_team_for_compare(bare_fallback, domain)
         for k in team_keys:
             if clean_team_for_compare(k, domain) == fallback_clean: return league_dict[k]
-    team_xi = extract_xi(team_clean)
+    team_xi = extract_xi(clean_search_name)
     best_match, best_score = None, 0
     for k in team_keys:
         k_clean = clean_team_for_compare(k, domain)
-        k_xi = extract_xi(k_clean)
+        k_xi = extract_xi(k)
         if team_xi == k_xi or team_xi is None or k_xi is None:
             score = fuzz.token_sort_ratio(team_clean, k_clean)
             if score > best_score and score >= 75:
@@ -552,8 +571,8 @@ def clean_club_for_matching(club_str):
     c = re.sub(r'\bcricket club\b|\bcc\b', '', c)
     c = c.replace('1881', '')
     c = c.replace('ciyms', 'ci')
-    c = re.sub(r'(?i)northern\s+ireland\s+malayali\s+association', 'nimacc', c)
-    c = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nimacc', c)
+    c = re.sub(r'(?i)northern\s+ireland\s+malayali\s+association', 'nima', c)
+    c = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nima', c)
     c = re.sub(r'(?i)belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'bisc', c)
     c = re.sub(r'(?i)civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'csni', c)
     c = re.sub(r'(?i)drumaness\s+super\s*kings', 'drumaness', c)
@@ -823,7 +842,7 @@ def doc_format_cricket_names(text, domain):
     text = str(text)
     text = text.replace('NCU', 'Mercury').replace('Mercury Pathway', 'NCU Pathway')
     text = text.replace('CIYMS', 'CI')
-    text = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'NIMACC', text)
+    text = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'NIMA', text)
     text = re.sub(r'(?i)belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'BISC', text)
     text = re.sub(r'(?i)civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'CSNI', text)
     text = re.sub(r'(?i)drumaness\s+super\s*kings', 'Drumaness Superkings', text)
@@ -849,8 +868,8 @@ def doc_get_player_team_from_match(match_str, base_club):
     
     def clean_for_matching(s):
         s = str(s).lower()
-        s = re.sub(r'northern\s+ireland\s+malayali\s+association', 'nimacc', s)
-        s = re.sub(r'\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nimacc', s)
+        s = re.sub(r'northern\s+ireland\s+malayali\s+association', 'nima', s)
+        s = re.sub(r'\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'nima', s)
         s = re.sub(r'belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'bisc', s)
         s = re.sub(r'civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'csni', s)
         s = re.sub(r'drumaness\s+super\s*kings', 'drumaness', s)
@@ -859,7 +878,7 @@ def doc_get_player_team_from_match(match_str, base_club):
         return set(s.split())
         
     t1_words, t2_words, club_words = clean_for_matching(team1), clean_for_matching(team2), clean_for_matching(base_club)
-    for target in ['nimacc', 'bisc', 'csni', 'drumaness', 'donacloney']:
+    for target in ['nima', 'bisc', 'csni', 'drumaness', 'donacloney']:
         if target in club_words:
             if target in t1_words: return team1
             if target in t2_words: return team2

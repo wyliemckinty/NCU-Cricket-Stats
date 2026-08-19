@@ -269,10 +269,15 @@ if app_mode == "Player Word Doc Generator":
                             name = str(row[name_col])
                             row_team = str(row.get('Team', '')).lower()
                             match_grp = str(row.get('Group', row.get('Match', ''))).lower()
+                            combined_context = row_team + ' ' + match_grp
                             if domain == "Men's" and name in eng.KNOWN_DUPLICATES:
                                 for club in eng.KNOWN_DUPLICATES[name]:
-                                    if club.lower() in row_team or club.lower() in match_grp:
-                                        return f"{name} ({club})"
+                                    # Check all known aliases/abbreviations for this club
+                                    # Use word-boundary regex to avoid 'CI' matching inside 'City' or 'CSNI'
+                                    variants = eng.CLUB_ALIASES.get(club, [club])
+                                    for variant in variants:
+                                        if re.search(r'\b' + re.escape(variant.lower()) + r'\b', combined_context):
+                                            return f"{name} ({club})"
                             return name
                         
                         batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
