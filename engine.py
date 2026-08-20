@@ -956,20 +956,20 @@ def doc_team_sort_key(team_name):
     if words and words[-1].isdigit(): return (team_name.rsplit(' ', 1)[0], int(words[-1]))
     return (team_name, 1)
 
-def add_bullet_point(doc, text, level=1, space_after=0):
+def add_bullet_point(doc, text, level=1, space_after=0, line_spacing=0.9):
     style_name = 'List Bullet' if level == 1 else f'List Bullet {level}'
     try:
         p = doc.add_paragraph(style=style_name)
         p.paragraph_format.space_after = Pt(space_after)
         p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.line_spacing = 0.9
+        p.paragraph_format.line_spacing = line_spacing
         run = p.add_run(text)
         run.font.name, run.font.size = 'Calibri', Pt(11) 
     except KeyError:
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(space_after)
         p.paragraph_format.space_before = Pt(0)
-        p.paragraph_format.line_spacing = 0.9
+        p.paragraph_format.line_spacing = line_spacing
         p.paragraph_format.left_indent = Pt(18 * level)
         run = p.add_run(f"{'·' if level == 1 else 'o'}\t{text}")
         run.font.name, run.font.size = 'Calibri', Pt(10) 
@@ -1021,7 +1021,7 @@ def get_player_aliases(official_name, aliases):
     return found_aliases
 
 
-def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain, aliases_list=None, player_abandoned=None):
+def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain, aliases_list=None, player_abandoned=None, league_dict=None, cup_df=None):
     player_batting = player_batting.copy() if player_batting is not None and not player_batting.empty else pd.DataFrame()
     player_bowling = player_bowling.copy() if player_bowling is not None and not player_bowling.empty else pd.DataFrame()
     club_name = "Unknown_Club"
@@ -1160,6 +1160,26 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
             is_ab = not player_abandoned[player_abandoned[ab_match_col] == grp].empty
 
+        comp_name = ""
+        if cup_df is not None and not cup_df.empty:
+            for _, r in cup_df.iterrows():
+                cup_match_str = doc_format_cricket_names(str(r.iloc[0]), domain)
+                if cup_match_str.strip() in str(grp).strip() or str(grp).strip() in cup_match_str.strip():
+                    comp_name = str(r.iloc[1])
+                    break
+        if not comp_name and league_dict is not None and team_played_for:
+            team_keys = list(league_dict.keys())
+            l = get_team_league(team_played_for, team_keys, league_dict, domain)
+            if l:
+                comp_name = str(l)
+        if not comp_name:
+            comp_name = "Friendly/Other"
+            
+        grp_display = f"{grp} ({comp_name})"
+        grp_display = grp_display.replace(", TBC -", " -").replace(", TBC ", " ")
+        import re
+        grp_display = re.sub(r'City of Belfast Playing Fields\s*\(.*?\)', 'City of Belfast Playing Fields', grp_display, flags=re.IGNORECASE)
+
         if not b_row.empty and b_row.iloc[0]['Innings'] > 0:
             hs = b_row.iloc[0]['High Score']
             hs_str = str(hs).replace('.0', '') if pd.notna(hs) else str(int(b_row.iloc[0]['Runs']))
@@ -1181,7 +1201,13 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         else: 
             bowl_str = "Bowling: Did not bowl"
             
-        matches_by_team.setdefault(team_played_for, []).append({'match': grp, 'bat_str': bat_str, 'bowl_str': bowl_str})
+        parts = grp.rsplit(' - ', 1)
+        date_str = parts[1].strip() if len(parts) == 2 else grp
+        clean_date_str = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', date_str, flags=re.IGNORECASE)
+        match_date = pd.to_datetime(clean_date_str, dayfirst=True, errors='coerce')
+        if pd.isna(match_date): match_date = pd.Timestamp.min
+        
+        matches_by_team.setdefault(team_played_for, []).append({'match': grp_display, 'bat_str': bat_str, 'bowl_str': bowl_str, 'date': match_date})
 
     doc = Document()
     style_normal = doc.styles['Normal']
@@ -1190,14 +1216,26 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     header_club_name = re.sub(r'(?i)\s*cricket club', '', club_name_clean).strip()
     display_player_name = active_player.split(' (')[0].title()
     
+    domain_label = "Open" if domain == "Men's" else ("Women" if domain == "Women's" else "Midweek")
     if aliases_list:
-        alias_str = " / ".join(aliases_list)
-        heading_title = f"{display_player_name} (Registered Name) / {alias_str} (Match Name) - {header_club_name} - Season Summary\n"
+        alias_str = aliases_list[0]
+        heading_title = f"{alias_str} - {header_club_name} - Season Summary ({domain_label})\n"
     else:
-        heading_title = f"{display_player_name} - {header_club_name} - Season Summary\n"
+        heading_title = f"{display_player_name} - {header_club_name} - Season Summary ({domain_label})\n"
         
     add_custom_heading(doc, heading_title, level=1)
     
+    add_custom_heading(doc, "Chronological Match Appearances", level=2)
+    
+    all_matches = []
+    for team, m_list in matches_by_team.items():
+        all_matches.extend(m_list)
+        
+    all_matches.sort(key=lambda x: x['date'])
+    
+    for i, m in enumerate(all_matches):
+        add_bullet_point(doc, m['match'], level=1, space_after=11 if i < len(all_matches) - 1 else 18, line_spacing=1.1)
+        
     add_custom_heading(doc, "Batting Statistics", level=2)
 
     batting_found = False

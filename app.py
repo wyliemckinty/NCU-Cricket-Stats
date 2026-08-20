@@ -207,10 +207,12 @@ if app_mode == "Player Word Doc Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
+                f_league = st.text_input("League Structure (Excel)", value=c_files.get("league", ""), key=f"doc_league_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"doc_cup_{domain}")
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=False)
+            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"))
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -413,7 +415,10 @@ if app_mode == "Player Word Doc Generator":
                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                         
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                        league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
+                        cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
+                        league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
+                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                         st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
@@ -429,7 +434,10 @@ if app_mode == "Player Word Doc Generator":
                                 p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                 p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                                 
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
+                                cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
+                                league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
+                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                                 st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
                             else:
                                 zip_buffer = io.BytesIO()
@@ -440,7 +448,10 @@ if app_mode == "Player Word Doc Generator":
                                         p_bat = matched_batting[matched_batting['Name'] == active_player]
                                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                        league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
+                                        cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
+                                        league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
+                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
@@ -479,7 +490,7 @@ elif app_mode == "Registration Checks":
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False)
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"))
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -644,7 +655,7 @@ elif app_mode == "Starring & Inactivity Reports":
 
     include_irish = False
     if domain == "Men's":
-        include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
+        include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="star_include_irish")
 
     with st.sidebar:
         st.divider() 
@@ -735,7 +746,7 @@ elif app_mode == "Club Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="fines_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="fines_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -827,7 +838,7 @@ elif app_mode == "Unregistered Player Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="unreg_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="unreg_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
