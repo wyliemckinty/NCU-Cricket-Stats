@@ -965,6 +965,9 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     player_batting = player_batting.copy() if player_batting is not None and not player_batting.empty else pd.DataFrame()
     player_bowling = player_bowling.copy() if player_bowling is not None and not player_bowling.empty else pd.DataFrame()
     club_name = "Unknown_Club"
+    primary_club = "Unknown_Club"
+    transfer_club = "Unknown_Club"
+    transfer_date = None
     if active_player.lower() == 'neil brand' and domain != "Women's":
         club_name = 'Muckamore'
     else:
