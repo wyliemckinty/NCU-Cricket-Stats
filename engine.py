@@ -528,6 +528,11 @@ def format_display_team(team_str, domain):
     # Strip formal club suffixes so that fallback matches seamlessly merge with standard scorecard entries
     c = re.sub(r'(?i)\s*Cricket Club\b', '', c)
     c = re.sub(r'(?i)\bCC\b', '', c)
+    c = re.sub(r'(?i)\bnima\s*cc\b|\bnimacc\b|\bnima\b', 'NIMA', c)
+    c = re.sub(r'(?i)belfast\s+international\s+sports\s+club|belfast\s+b\.i\.s\.c\.', 'BISC', c)
+    c = re.sub(r'(?i)civil\s+service\s+north\s+of\s+ireland|civil\s+service\s+north', 'CSNI', c)
+    c = re.sub(r'(?i)drumaness\s+super\s*kings', 'Drumaness Superkings', c)
+    c = c.replace('Donaghcloney', 'Donacloney')
     
     if domain == "Midweek":
         c = re.sub(r'(?i)\bmw1\s*xi\b', ' 1', c)
