@@ -656,12 +656,10 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
         elif c2_cnt > c1_cnt: return t2
         return t1
         
-    # If we couldn't match the teams, fallback to the player's officially registered club
-    if reg_val and str(reg_val).lower() != 'nan':
-        fallback_club = str(reg_val).split('/')[0].strip()
-        if is_pathway_match:
-            return f"{fallback_club} (Pathway)"
-        return fallback_club
+    # If we couldn't match the teams to the player's known clubs, we do NOT fallback to 
+    # their registered club's 1st XI, as this artificially inflates Premier League stats
+    # when scorers make mistakes (e.g., adding a Woodvale player to a Dundrum v Templepatrick match).
+    # Instead, we let it drop through to "Unknown" so it gets flagged in the Unassigned/Non-NCU tab.
         
     if t1 and t1 != "Unknown" and t2 and t2 != "Unknown":
         return f"Unknown ({t1} v {t2})"
@@ -689,7 +687,7 @@ def parse_high_score(scores_series):
     return f"{best_score}*" if is_not_out else str(best_score)
 
 def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, league_dict, domain, bat_sort="Runs", bowl_sort="Wickets", secondary_map=None, alias_map=None, _cache_version=None):
-    for col in ['Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes']:
+    for col in ['Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes', 'Catches', 'Catches as Keeper', 'Stumpings']:
         if col in batting_df.columns: batting_df[col] = pd.to_numeric(batting_df[col], errors='coerce').fillna(0)
     for col in ['Innings', 'Balls', 'Maidens', 'Runs', 'Wickets']:
         if col in bowling_df.columns: bowling_df[col] = pd.to_numeric(bowling_df[col], errors='coerce').fillna(0)
@@ -699,6 +697,23 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
     batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
     bowling_df['Team Played For'] = bowling_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
     
+    def get_opponent_from_row(row):
+        group_str = str(row.get('Group', row.get('Match', '')))
+        t1, t2 = extract_teams_from_group(group_str)
+        team_played = str(row.get('Team Played For', ''))
+        if team_played == t1: return t2
+        if team_played == t2: return t1
+        c_my = extract_base_club_name(team_played).lower()
+        c_t1 = extract_base_club_name(t1).lower()
+        c_t2 = extract_base_club_name(t2).lower()
+        if c_my == c_t1: return t2
+        if c_my == c_t2: return t1
+        return t2 if t1 in team_played else t1
+
+    if not batting_df.empty:
+        batting_df['Opponent'] = batting_df.apply(get_opponent_from_row, axis=1)
+    if not bowling_df.empty:
+        bowling_df['Opponent'] = bowling_df.apply(get_opponent_from_row, axis=1)
     def apply_league(t):
         league = get_team_league(t, team_keys, league_dict, domain)
         if not league: return "Unassigned"
@@ -721,24 +736,57 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         return " / ".join(teams) if teams else "Unknown"
 
     def group_batting(df_to_group):
-        grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg({
+        agg_dict = {
             'Name': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
             'Team Played For': lambda x: combine_teams(x, domain),
             'Matches': 'sum', 'Innings': 'sum', 'Not Outs': 'sum', 'Runs': 'sum',
             'Balls': 'sum', 'Fours': 'sum', 'Sixes': 'sum', 'High Score': parse_high_score
-        }).reset_index()
+        }
+        for col in ['Catches', 'Catches as Keeper', 'Stumpings']:
+            if col in df_to_group.columns:
+                agg_dict[col] = 'sum'
+        
+        def score_val(s):
+            s = str(s).replace('*', '').replace('.0', '')
+            return int(s) if s.isdigit() else 0
+        def is_not_out(s):
+            return 1 if '*' in str(s) else 0
+        
+        df_copy = df_to_group.copy()
+        df_copy['Score_Int'] = df_copy['High Score'].apply(score_val)
+        df_copy['Score_NO'] = df_copy['High Score'].apply(is_not_out)
+        
+        sorted_bat = df_copy.sort_values(by=['Score_Int', 'Score_NO'], ascending=[False, False])
+        best_innings = sorted_bat.drop_duplicates(subset=['League', 'Cleaned Name']).copy()
+        if 'Opponent' in best_innings.columns:
+            best_innings['High Score Against'] = best_innings['Opponent']
+        else:
+            best_innings['High Score Against'] = "Unknown"
+        best_innings_map = best_innings.set_index(['League', 'Cleaned Name'])['High Score Against']
+
+        grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg(agg_dict).reset_index()
+        grouped = grouped.merge(best_innings_map, on=['League', 'Cleaned Name'], how='left')
+        
         grouped.rename(columns={'Team Played For': 'Team', 'Name': 'Player'}, inplace=True)
         grouped.drop(columns=['Cleaned Name'], inplace=True)
         outs = grouped['Innings'] - grouped['Not Outs']
         grouped['Average'] = np.where(outs > 0, grouped['Runs'] / outs, np.nan)
         grouped['Strike Rate'] = np.where(grouped['Balls'] > 0, (grouped['Runs'] / grouped['Balls']) * 100, np.nan)
-        return grouped[['League', 'Player', 'Team', 'Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes', 'High Score', 'Average', 'Strike Rate']]
+        
+        cols = ['League', 'Player', 'Team', 'Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes', 'High Score', 'High Score Against', 'Average', 'Strike Rate']
+        for col in ['Catches', 'Catches as Keeper', 'Stumpings']:
+            if col in grouped.columns: cols.append(col)
+        return grouped[cols]
 
     def group_bowling(df_to_group, bat_avgs):
         sorted_df = df_to_group.sort_values(by=['Wickets', 'Runs'], ascending=[False, True])
         best_spells = sorted_df.drop_duplicates(subset=['League', 'Cleaned Name']).copy()
         best_spells['Best Bowling'] = best_spells['Wickets'].fillna(0).astype(int).astype(str) + '-' + best_spells['Runs'].fillna(0).astype(int).astype(str)
-        bbi_series = best_spells.set_index(['League', 'Cleaned Name'])['Best Bowling']
+        if 'Opponent' in best_spells.columns:
+            best_spells['Best Bowling Against'] = best_spells['Opponent']
+        else:
+            best_spells['Best Bowling Against'] = "Unknown"
+        bbi_series = best_spells.set_index(['League', 'Cleaned Name'])[['Best Bowling', 'Best Bowling Against']]
         
         grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg({
             'Bowler': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
@@ -756,7 +804,7 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         grouped['Average'] = np.where(grouped['Wickets'] > 0, grouped['Runs'] / grouped['Wickets'], np.nan)
         grouped['Economy'] = np.where(grouped['Balls'] > 0, (grouped['Runs'] / grouped['Balls']) * 6, np.nan)
         grouped['Strike Rate'] = np.where(grouped['Wickets'] > 0, grouped['Balls'] / grouped['Wickets'], np.nan)
-        return grouped[['League', 'Player', 'Team', 'Matches', 'Innings', 'Overs', 'Maidens', 'Runs', 'Wickets', 'Best Bowling', 'Average', 'Economy', 'Strike Rate']]
+        return grouped[['League', 'Player', 'Team', 'Matches', 'Innings', 'Overs', 'Maidens', 'Runs', 'Wickets', 'Best Bowling', 'Best Bowling Against', 'Average', 'Economy', 'Strike Rate']]
 
     if domain == "Midweek":
         leagues_bat = group_batting(batting_df)
@@ -823,13 +871,20 @@ def format_excel_sheet(writer, df, sheet_name, min_label=None):
     two_decimals = workbook.add_format({'num_format': '0.00', 'align': 'center'})
     
     for col_num, col_name in enumerate(df.columns):
-        worksheet.write(0, col_num, col_name, left_header if col_name in ['Player', 'Team'] else center_header)
+        worksheet.write(0, col_num, col_name, left_header if col_name in ['Player', 'Team', 'High Score Against', 'Best Bowling Against'] else center_header)
+        
+        # Calculate optimal width
         col_width = max(max((len(str(x)) for x in df[col_name]), default=0), len(str(col_name))) + 2
         
-        if col_name == 'Player': worksheet.set_column(col_num, col_num, col_width, bold_name)
-        elif col_name == 'Team': worksheet.set_column(col_num, col_num, col_width, left_align)
-        elif col_name in ['Average', 'Strike Rate', 'Economy']: worksheet.set_column(col_num, col_num, col_width, two_decimals)
-        else: worksheet.set_column(col_num, col_num, col_width, center_align)
+        if col_name == 'Player': 
+            worksheet.set_column(col_num, col_num, col_width, bold_name)
+        elif col_name in ['Team', 'High Score Against', 'Best Bowling Against']: 
+            worksheet.set_column(col_num, col_num, col_width, left_align)
+        elif col_name in ['Average', 'Strike Rate', 'Economy']: 
+            # Reduce width for these specific columns as requested
+            worksheet.set_column(col_num, col_num, len(str(col_name)) + 0.5, two_decimals)
+        else: 
+            worksheet.set_column(col_num, col_num, col_width, center_align)
             
     if min_label:
         worksheet.write(len(df) + 2, 0, min_label, workbook.add_format({'italic': True, 'bold': True}))

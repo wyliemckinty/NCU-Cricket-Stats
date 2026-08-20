@@ -101,7 +101,7 @@ DEFAULT_THRESHOLDS = {
     "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
     "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
     "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
-    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
+    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5, "mw_min_bowl_innings": 0
 }
 
 def init_threshold_store():

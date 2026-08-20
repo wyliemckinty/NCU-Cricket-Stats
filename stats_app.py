@@ -46,7 +46,7 @@ DEFAULT_THRESHOLDS = {
     "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
     "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
     # Midweek Thresholds
-    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
+    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5, "mw_min_bowl_innings": 0
 }
 
 # Threshold Persistence Helpers
@@ -256,10 +256,11 @@ if app_mode == "Bulk Averages Calculator":
     
     if domain == "Midweek":
         st.markdown("**Midweek Overall Qualifiers** *(Groups are fixed to 20 Runs / 2 Wickets)*")
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1: mw_min_runs = st.number_input("Minimum Runs", min_value=0, value=get_threshold_val("mw_min_runs"), key="mw_min_runs")
-        with col2: mw_min_innings = st.number_input("Minimum Innings", min_value=0, value=get_threshold_val("mw_min_innings"), key="mw_min_innings")
+        with col2: mw_min_innings = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("mw_min_innings"), key="mw_min_innings")
         with col3: mw_min_wickets = st.number_input("Minimum Wickets", min_value=0, value=get_threshold_val("mw_min_wickets"), key="mw_min_wickets")
+        with col4: mw_min_bowl_innings = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("mw_min_bowl_innings"), key="mw_min_bowl_innings")
         
     elif domain == "Women's":
         st.info("💡 **Women's Tiered Rules Active:** Below are your automated target thresholds.")
@@ -269,7 +270,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: w1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w1_runs"), key="w1_runs")
             with c2: w1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w1_bmat"), key="w1_bmat")
             with c3: w1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w1_wick"), key="w1_wick")
-            with c4: w1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w1_mmat"), key="w1_mmat")
+            with c4: w1_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("w1_mmat"), key="w1_mmat")
             
         with st.container(border=True):
             st.markdown("🏏 **Junior League Sections 1**")
@@ -277,7 +278,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: w2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w2_runs"), key="w2_runs")
             with c2: w2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w2_bmat"), key="w2_bmat")
             with c3: w2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w2_wick"), key="w2_wick")
-            with c4: w2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("w2_mmat"), key="w2_mmat")
+            with c4: w2_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("w2_mmat"), key="w2_mmat")
             
     else:  # Men's
         st.info("💡 **Men's Tiered Rules Active:** Below are your automated target thresholds.")
@@ -287,7 +288,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: t1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t1_runs"), key="t1_runs")
             with c2: t1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t1_bmat"), key="t1_bmat")
             with c3: t1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t1_wick"), key="t1_wick")
-            with c4: t1_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t1_mmat"), key="t1_mmat")
+            with c4: t1_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t1_mmat"), key="t1_mmat")
             
         with st.container(border=True):
             st.markdown("🛡️ **Senior League Sections 2 and 3**")
@@ -295,7 +296,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: t2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t2_runs"), key="t2_runs")
             with c2: t2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t2_bmat"), key="t2_bmat")
             with c3: t2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t2_wick"), key="t2_wick")
-            with c4: t2_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t2_mmat"), key="t2_mmat")
+            with c4: t2_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t2_mmat"), key="t2_mmat")
             
         with st.container(border=True):
             st.markdown("🏏 **Junior League Sections 1 to 10**")
@@ -303,7 +304,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: t3_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t3_runs"), key="t3_runs")
             with c2: t3_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t3_bmat"), key="t3_bmat")
             with c3: t3_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t3_wick"), key="t3_wick")
-            with c4: t3_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t3_mmat"), key="t3_mmat")
+            with c4: t3_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t3_mmat"), key="t3_mmat")
             
         with st.container(border=True):
             st.markdown("🌱 **Junior League Sections 11a to 11b**")
@@ -311,7 +312,7 @@ if app_mode == "Bulk Averages Calculator":
             with c1: t4_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t4_runs"), key="t4_runs")
             with c2: t4_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t4_bmat"), key="t4_bmat")
             with c3: t4_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t4_wick"), key="t4_wick")
-            with c4: t4_mmat = st.number_input("Min Bowl Matches", min_value=0, value=get_threshold_val("t4_mmat"), key="t4_mmat")
+            with c4: t4_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t4_mmat"), key="t4_mmat")
 
     st.divider() 
     st.subheader("Set Sorting Preferences")
@@ -428,8 +429,9 @@ if app_mode == "Bulk Averages Calculator":
                                 mw_r = st.session_state.get("mw_min_runs", get_threshold_val("mw_min_runs"))
                                 mw_i = st.session_state.get("mw_min_innings", get_threshold_val("mw_min_innings"))
                                 mw_w = st.session_state.get("mw_min_wickets", get_threshold_val("mw_min_wickets"))
+                                mw_bowl_i = st.session_state.get("mw_min_bowl_innings", get_threshold_val("mw_min_bowl_innings"))
                                 bat_thresh, bat_match_thresh = (mw_r, mw_i) if "Overall" in league else (20, 0)
-                                bowl_thresh, bowl_match_thresh = (mw_w, 0) if "Overall" in league else (2, 0)
+                                bowl_thresh, bowl_match_thresh = (mw_w, mw_bowl_i) if "Overall" in league else (2, 0)
                             elif domain == "Women's":
                                 if "premier" in name_lower or "senior league 1" in name_lower or "senior 1" in name_lower or "senior league" in name_lower:
                                     bat_thresh = st.session_state.get("w1_runs", get_threshold_val("w1_runs"))
@@ -468,17 +470,51 @@ if app_mode == "Bulk Averages Calculator":
 
                             if disable_thresholds: bat_thresh, bat_match_thresh, bowl_thresh, bowl_match_thresh = 0, 0, 0, 0
 
+                            fielding_df = pd.DataFrame()
+                            wk_df = pd.DataFrame()
                             if not league_bat.empty:
-                                league_bat = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat[bat_qual_col] >= bat_match_thresh)]
-                                if not league_bat.empty:
-                                    league_bat.insert(0, 'Position', range(1, len(league_bat) + 1))
-                                    eng.format_excel_sheet(writer, league_bat, f"{tab_prefix} Bat", min_label=f"Min {bat_thresh} runs, {bat_match_thresh} {bat_qual_label}")
+                                if 'Catches as Keeper' in league_bat.columns or 'Stumpings' in league_bat.columns:
+                                    wk_data = league_bat.copy()
+                                    wk_data['Catches as Keeper'] = pd.to_numeric(wk_data.get('Catches as Keeper', 0), errors='coerce').fillna(0).astype(int)
+                                    wk_data['Stumpings'] = pd.to_numeric(wk_data.get('Stumpings', 0), errors='coerce').fillna(0).astype(int)
+                                    wk_data['Total'] = wk_data['Catches as Keeper'] + wk_data['Stumpings']
+                                    wk_data = wk_data[wk_data['Total'] > 0]
+                                    if not wk_data.empty:
+                                        wk_data = wk_data[['Player', 'Team', 'Catches as Keeper', 'Stumpings', 'Total']]
+                                        wk_data.rename(columns={'Player': 'Name', 'Team': 'Club', 'Catches as Keeper': 'Catches'}, inplace=True)
+                                        wk_data = wk_data.sort_values(by=['Total', 'Catches'], ascending=[False, False])
+                                        wk_data.insert(0, 'Position', range(1, len(wk_data) + 1))
+                                        wk_df = wk_data
                                 
+                                if 'Catches' in league_bat.columns:
+                                    f_data = league_bat.copy()
+                                    f_data['Catches'] = pd.to_numeric(f_data['Catches'], errors='coerce').fillna(0).astype(int)
+                                    f_data = f_data[f_data['Catches'] > 0]
+                                    if not f_data.empty:
+                                        f_data = f_data[['Player', 'Team', 'Matches', 'Catches']]
+                                        f_data.rename(columns={'Player': 'Name', 'Team': 'Club', 'Matches': 'M'}, inplace=True)
+                                        f_data = f_data.sort_values(by=['Catches', 'M'], ascending=[False, True])
+                                        f_data.insert(0, 'Position', range(1, len(f_data) + 1))
+                                        fielding_df = f_data
+
+                            if not league_bat.empty:
+                                league_bat_filtered = league_bat[(league_bat['Runs'] >= bat_thresh) & (league_bat[bat_qual_col] >= bat_match_thresh)].copy()
+                                if not league_bat_filtered.empty:
+                                    league_bat_filtered.insert(0, 'Position', range(1, len(league_bat_filtered) + 1))
+                                    drop_cols = [c for c in ['Catches', 'Catches as Keeper', 'Stumpings'] if c in league_bat_filtered.columns]
+                                    league_bat_filtered = league_bat_filtered.drop(columns=drop_cols)
+                                    eng.format_excel_sheet(writer, league_bat_filtered, f"{tab_prefix} Bat", min_label=f"Min {bat_thresh} runs, {bat_match_thresh} {bat_qual_label}")
                             if not league_bowl.empty:
-                                league_bowl = league_bowl[(league_bowl['Wickets'] >= bowl_thresh) & (league_bowl['Matches'] >= bowl_match_thresh)]
+                                league_bowl = league_bowl[(league_bowl['Wickets'] >= bowl_thresh) & (league_bowl['Innings'] >= bowl_match_thresh)]
                                 if not league_bowl.empty:
                                     league_bowl.insert(0, 'Position', range(1, len(league_bowl) + 1))
-                                    eng.format_excel_sheet(writer, league_bowl, f"{tab_prefix} Bowl", min_label=f"Min {bowl_thresh} wickets, {bowl_match_thresh} matches")
+                                    eng.format_excel_sheet(writer, league_bowl, f"{tab_prefix} Bowl", min_label=f"Min {bowl_thresh} wickets, {bowl_match_thresh} innings")
+                            
+                            if not wk_df.empty:
+                                eng.format_excel_sheet(writer, wk_df, f"{tab_prefix} WK")
+                            
+                            if not fielding_df.empty:
+                                eng.format_excel_sheet(writer, fielding_df, f"{tab_prefix} Field")
                     
                     st.success("✅ Averages calculated successfully!")
                     tab_preview_bat, tab_preview_bowl = st.tabs(["🏏 Batting Preview", "🔮 Bowling Preview"])
