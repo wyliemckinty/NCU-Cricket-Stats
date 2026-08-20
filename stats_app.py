@@ -127,12 +127,12 @@ with st.sidebar:
 # ==========================================
 # TOOL 1: BULK AVERAGES
 # ==========================================
-def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, include_t20, exclude_pathway=False):
+def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, include_t20, include_pathway=False):
     """
     Filters scorecard records according to Cup and T20 inclusion toggles
     with strict date matching and explicit League match protection.
     """
-    if include_cup and include_t20 and not exclude_pathway:
+    if include_cup and include_t20 and include_pathway:
         return batting_df, bowling_df
 
     cup_match_set = set()  # Stores (team1, team2, date_YYYY-MM-DD)
@@ -235,7 +235,7 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
 
     def should_keep(grp):
         grp_lower = str(grp).lower()
-        if exclude_pathway and 'pathway' in grp_lower:
+        if not include_pathway and 'pathway' in grp_lower:
             return False
             
         m_type = classify_match(grp)
@@ -331,7 +331,7 @@ if app_mode == "Bulk Averages Calculator":
         
         st.markdown("<br>", unsafe_allow_html=True)
         
-        include_cup, include_t20, exclude_pathway, include_irish = True, True, False, False
+        include_cup, include_t20, include_pathway, include_irish = True, True, False, False
         
         # Calculate how many toggles we need to show
         toggle_cols = []
@@ -348,7 +348,7 @@ if app_mode == "Bulk Averages Calculator":
             with cols[idx]: include_t20 = st.toggle("Include T20", value=True)
             idx += 1
         if 'pathway' in toggle_cols:
-            with cols[idx]: exclude_pathway = st.toggle("Exclude Pathway", value=False)
+            with cols[idx]: include_pathway = st.toggle("Include Pathway", value=False)
             idx += 1
         if 'irish' in toggle_cols:
             with cols[idx]: include_irish = st.toggle("Include Irish", value=False)
@@ -397,7 +397,7 @@ if app_mode == "Bulk Averages Calculator":
                     # --- ADD THIS MATCH FORMAT FILTER ---
                     if domain in ["Men's", "Women's"]:
                         batting, bowling = filter_match_formats(
-                            batting, bowling, f_cup, domain, include_cup, include_t20, exclude_pathway
+                            batting, bowling, f_cup, domain, include_cup, include_t20, include_pathway
                         )
                     # -----------------------------------
 
