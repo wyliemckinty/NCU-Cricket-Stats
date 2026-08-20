@@ -38,13 +38,22 @@ CONFIG_FILE = "threshold_settings.json"
 
 DEFAULT_THRESHOLDS = {
     # Men's Thresholds
+    "p_runs": 400, "p_bmat": 10, "p_wick": 25, "p_mmat": 5,
+    "s1_runs": 300, "s1_bmat": 10, "s1_wick": 20, "s1_mmat": 5,
+    "s2_runs": 200, "s2_bmat": 5, "s2_wick": 15, "s2_mmat": 5,
+    "s3_runs": 200, "s3_bmat": 5, "s3_wick": 15, "s3_mmat": 5,
     "t1_runs": 200, "t1_bmat": 5, "t1_wick": 15, "t1_mmat": 5,
     "t2_runs": 150, "t2_bmat": 5, "t2_wick": 10, "t2_mmat": 5,
     "t3_runs": 100, "t3_bmat": 3, "t3_wick": 5,  "t3_mmat": 3,
     "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
+    **{f"j{i}_runs": 100 for i in list(range(1, 11)) + ['11a', '11b', '11c']},
+    **{f"j{i}_bmat": 3 for i in list(range(1, 11)) + ['11a', '11b', '11c']},
+    **{f"j{i}_wick": 5 for i in list(range(1, 11)) + ['11a', '11b', '11c']},
+    **{f"j{i}_mmat": 3 for i in list(range(1, 11)) + ['11a', '11b', '11c']},
     # Women's Thresholds
-    "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
-    "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
+    "wp_runs": 100, "wp_bmat": 5, "wp_wick": 10, "wp_mmat": 5,
+    "ws1_runs": 100, "ws1_bmat": 5, "ws1_wick": 7, "ws1_mmat": 5,
+    "wj1_runs": 0, "wj1_bmat": 0, "wj1_wick": 0, "wj1_mmat": 0,
     # Midweek Thresholds
     "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5, "mw_min_bowl_innings": 0
 }
@@ -99,6 +108,12 @@ st.markdown(f"""
     div.stButton > button {{ white-space: nowrap !important; }}
     div.stButton > button[kind="primary"] {{ border-radius: 8px; padding: 0.5rem 1.5rem; }}
     div.stDownloadButton > button:first-child {{ background-color: #0066cc; color: white; border-radius: 8px; border: none; padding: 0.5rem 1.5rem; }}
+    
+    /* Highlight the league selection dropdowns */
+    div.element-container:has(.league-dropdown-marker) + div.element-container div[data-baseweb="select"] > div {{
+        background-color: #e0f2fe !important;
+        border: 1px solid #7dd3fc !important;
+    }}
 </style>
 """, unsafe_allow_html=True)
 
@@ -237,23 +252,20 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
 if app_mode == "Bulk Averages Calculator":
     init_threshold_store()
     st.title("📊 League Bulk Averages Calculator")
-    st.markdown("Generate full season averages for Men's, Women's, or Midweek leagues.")
-
-    st.subheader("Select League Domain")
-    domain = st.radio("Choose the ruleset and default files to apply:", ["Men's", "Women's", "Midweek"], horizontal=True)
-
-    st.divider() 
-    col_thresh_title, col_save, col_reset = st.columns([2.5, 1, 1])
-    with col_thresh_title: st.subheader("Set Minimum Thresholds")
+    
+    col_dom, col_save, col_reset = st.columns([2, 1, 1])
+    with col_dom:
+        domain = st.radio("League Domain:", ["Men's", "Women's", "Midweek"], horizontal=True, label_visibility="collapsed")
     with col_save:
-        if st.button("💾 Save Thresholds to Disk", use_container_width=True):
+        if st.button("💾 Save Thresholds", use_container_width=True):
             save_threshold_settings()
             st.toast("Saved custom thresholds as new defaults!", icon="✅")
     with col_reset:
         if st.button("🔄 Reset Defaults", use_container_width=True):
             reset_threshold_settings()
-            st.toast("Restored factory default thresholds!", icon="ℹ️")
+            st.toast("Restored factory default thresholds!", icon="♻️")
     
+    st.markdown("#### Minimum Thresholds")
     if domain == "Midweek":
         st.markdown("**Midweek Overall Qualifiers** *(Groups are fixed to 20 Runs / 2 Wickets)*")
         col1, col2, col3, col4 = st.columns(4)
@@ -265,79 +277,88 @@ if app_mode == "Bulk Averages Calculator":
     elif domain == "Women's":
         st.info("💡 **Women's Tiered Rules Active:** Below are your automated target thresholds.")
         with st.container(border=True):
-            st.markdown("🏆 **Premier League and Senior League Section 1**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: w1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w1_runs"), key="w1_runs")
-            with c2: w1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w1_bmat"), key="w1_bmat")
-            with c3: w1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w1_wick"), key="w1_wick")
-            with c4: w1_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("w1_mmat"), key="w1_mmat")
+            c_title, c_drop = st.columns([1.5, 1])
+            with c_title: st.markdown("🏏 **Women's Leagues (Individual)**")
             
-        with st.container(border=True):
-            st.markdown("🏏 **Junior League Sections 1**")
+            women_leagues = ['Premier League', 'Senior League Section 1', 'Junior League Section 1']
+            with c_drop:
+                selected_wl = st.selectbox("Select Section", women_leagues, label_visibility="collapsed")
+                
+            w_id = 'wp' if selected_wl == 'Premier League' else ('ws1' if 'Senior' in selected_wl else 'wj1')
             c1, c2, c3, c4 = st.columns(4)
-            with c1: w2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("w2_runs"), key="w2_runs")
-            with c2: w2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("w2_bmat"), key="w2_bmat")
-            with c3: w2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("w2_wick"), key="w2_wick")
-            with c4: w2_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("w2_mmat"), key="w2_mmat")
+            with c1: st.number_input("Min Runs", min_value=0, value=get_threshold_val(f"{w_id}_runs"), key=f"{w_id}_runs")
+            with c2: st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val(f"{w_id}_bmat"), key=f"{w_id}_bmat")
+            with c3: st.number_input("Min Wickets", min_value=0, value=get_threshold_val(f"{w_id}_wick"), key=f"{w_id}_wick")
+            with c4: st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val(f"{w_id}_mmat"), key=f"{w_id}_mmat")
             
     else:  # Men's
         st.info("💡 **Men's Tiered Rules Active:** Below are your automated target thresholds.")
         with st.container(border=True):
-            st.markdown("🏆 **Premier League and Section 1**")
+            c_title, c_drop = st.columns([1.5, 1])
+            with c_title: st.markdown("🏆 **Premier & Senior Leagues (Individual)**")
+            
+            senior_leagues = ['Premier League', 'Section 1', 'Section 2', 'Section 3']
+            with c_drop:
+                selected_sl = st.selectbox("Select Section", senior_leagues, label_visibility="collapsed")
+                
+            s_id = 'p' if selected_sl == 'Premier League' else f"s{selected_sl[-1]}"
             c1, c2, c3, c4 = st.columns(4)
-            with c1: t1_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t1_runs"), key="t1_runs")
-            with c2: t1_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t1_bmat"), key="t1_bmat")
-            with c3: t1_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t1_wick"), key="t1_wick")
-            with c4: t1_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t1_mmat"), key="t1_mmat")
+            with c1: st.number_input("Min Runs", min_value=0, value=get_threshold_val(f"{s_id}_runs"), key=f"{s_id}_runs")
+            with c2: st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val(f"{s_id}_bmat"), key=f"{s_id}_bmat")
+            with c3: st.number_input("Min Wickets", min_value=0, value=get_threshold_val(f"{s_id}_wick"), key=f"{s_id}_wick")
+            with c4: st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val(f"{s_id}_mmat"), key=f"{s_id}_mmat")
             
         with st.container(border=True):
-            st.markdown("🛡️ **Senior League Sections 2 and 3**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t2_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t2_runs"), key="t2_runs")
-            with c2: t2_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t2_bmat"), key="t2_bmat")
-            with c3: t2_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t2_wick"), key="t2_wick")
-            with c4: t2_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t2_mmat"), key="t2_mmat")
+            c_title, c_drop = st.columns([1.5, 1])
+            with c_title: st.markdown("🏏 **Junior Leagues (Individual)**")
             
-        with st.container(border=True):
-            st.markdown("🏏 **Junior League Sections 1 to 10**")
+            junior_leagues = [str(i) for i in range(1, 11)] + ['11a', '11b', '11c']
+            with c_drop:
+                selected_jl = st.selectbox("Select Section", [f"Section {j}" for j in junior_leagues], label_visibility="collapsed")
+                
+            j_id = selected_jl.replace("Section ", "")
             c1, c2, c3, c4 = st.columns(4)
-            with c1: t3_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t3_runs"), key="t3_runs")
-            with c2: t3_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t3_bmat"), key="t3_bmat")
-            with c3: t3_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t3_wick"), key="t3_wick")
-            with c4: t3_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t3_mmat"), key="t3_mmat")
-            
-        with st.container(border=True):
-            st.markdown("🌱 **Junior League Sections 11a to 11b**")
-            c1, c2, c3, c4 = st.columns(4)
-            with c1: t4_runs = st.number_input("Min Runs", min_value=0, value=get_threshold_val("t4_runs"), key="t4_runs")
-            with c2: t4_bmat = st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val("t4_bmat"), key="t4_bmat")
-            with c3: t4_wick = st.number_input("Min Wickets", min_value=0, value=get_threshold_val("t4_wick"), key="t4_wick")
-            with c4: t4_mmat = st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val("t4_mmat"), key="t4_mmat")
+            with c1: st.number_input("Min Runs", min_value=0, value=get_threshold_val(f"j{j_id}_runs"), key=f"j{j_id}_runs")
+            with c2: st.number_input("Min Bat Innings", min_value=0, value=get_threshold_val(f"j{j_id}_bmat"), key=f"j{j_id}_bmat")
+            with c3: st.number_input("Min Wickets", min_value=0, value=get_threshold_val(f"j{j_id}_wick"), key=f"j{j_id}_wick")
+            with c4: st.number_input("Min Bowl Innings", min_value=0, value=get_threshold_val(f"j{j_id}_mmat"), key=f"j{j_id}_mmat")
 
-    st.divider() 
-    st.subheader("Set Sorting Preferences")
-    colX, colY = st.columns(2)
-    with colX: bat_sort_pref = st.selectbox("Batting Primary Sort", ["Runs", "Average", "Strike Rate"], index=0)
-    with colY: bowl_sort_pref = st.selectbox("Bowling Primary Sort", ["Wickets", "Average", "Economy", "Strike Rate"], index=0)
-
-    st.divider()
-    st.subheader("Match Inclusion & Threshold Settings")
-    colA, colB, colC, colD = st.columns(4)
-    include_cup, include_t20, exclude_pathway = True, True, False
-    
-    with colA:
-        if domain in ["Men's", "Women's"]: include_cup = st.toggle("Include Cup Matches", value=True)
-    with colB:
-        if domain == "Men's": include_t20 = st.toggle("Include T20 Matches", value=True)
-    with colC:
-        if domain == "Men's": exclude_pathway = st.toggle("Exclude Pathway XI Matches", value=False)
-    with colD:
-        disable_thresholds = st.toggle("Set all target thresholds to 0", value=False, key="disable_thresholds", on_change=toggle_zero_thresholds)
+    st.markdown("#### Configuration & Sorting")
+    with st.container(border=True):
+        colA, colB = st.columns(2)
+        with colA: bat_sort_pref = st.selectbox("Batting Sort", ["Runs", "Average", "Strike Rate"], index=0)
+        with colB: bowl_sort_pref = st.selectbox("Bowling Sort", ["Wickets", "Average", "Economy", "Strike Rate"], index=0)
+        
+        st.markdown("<br>", unsafe_allow_html=True)
+        
+        include_cup, include_t20, exclude_pathway, include_irish = True, True, False, False
+        
+        # Calculate how many toggles we need to show
+        toggle_cols = []
+        if domain in ["Men's", "Women's"]: toggle_cols.append('cup')
+        if domain == "Men's": toggle_cols.extend(['t20', 'pathway', 'irish'])
+        toggle_cols.append('zero')
+        
+        cols = st.columns(len(toggle_cols))
+        idx = 0
+        if 'cup' in toggle_cols:
+            with cols[idx]: include_cup = st.toggle("Include Cup", value=True)
+            idx += 1
+        if 't20' in toggle_cols:
+            with cols[idx]: include_t20 = st.toggle("Include T20", value=True)
+            idx += 1
+        if 'pathway' in toggle_cols:
+            with cols[idx]: exclude_pathway = st.toggle("Exclude Pathway", value=False)
+            idx += 1
+        if 'irish' in toggle_cols:
+            with cols[idx]: include_irish = st.toggle("Include Irish", value=False)
+            idx += 1
+        if 'zero' in toggle_cols:
+            with cols[idx]: disable_thresholds = st.toggle("Thresholds to 0", value=False, key="disable_thresholds", on_change=toggle_zero_thresholds)
 
     with st.sidebar:
-        st.divider() 
         c_files = eng.DEFAULT_FILES[domain]
-        with st.expander("📁 File Path Configurations", expanded=False):
+        with st.expander("📂 File Path Configurations", expanded=False):
             f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"avg_reg_{domain}")
             f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"avg_alias_{domain}")
             f_unreg = st.text_input("Unregistered Players Map", value=c_files.get("unreg", ""), key=f"avg_unreg_{domain}")
@@ -346,17 +367,11 @@ if app_mode == "Bulk Averages Calculator":
             f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"avg_bat_{domain}")
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"avg_bowl_{domain}")
             f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"avg_cup_{domain}")
-    
-    include_irish = False
-    if domain == "Men's":
-        include_irish = st.toggle("Include Irish Competitions in Averages?", value=False)
-        if include_irish:
-            with st.sidebar:
-                with st.expander("📁 File Path Configurations", expanded=False):
-                    f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="avg_irish_bat")
-                    f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="avg_irish_bowl")
+            if include_irish:
+                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="avg_irish_bat")
+                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="avg_irish_bowl")
 
-    st.subheader("Generate Averages")
+    st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Process Averages", type="primary"):
         files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl, f_cup]
         if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
@@ -433,37 +448,56 @@ if app_mode == "Bulk Averages Calculator":
                                 bat_thresh, bat_match_thresh = (mw_r, mw_i) if "Overall" in league else (20, 0)
                                 bowl_thresh, bowl_match_thresh = (mw_w, mw_bowl_i) if "Overall" in league else (2, 0)
                             elif domain == "Women's":
-                                if "premier" in name_lower or "senior league 1" in name_lower or "senior 1" in name_lower or "senior league" in name_lower:
-                                    bat_thresh = st.session_state.get("w1_runs", get_threshold_val("w1_runs"))
-                                    bat_match_thresh = st.session_state.get("w1_bmat", get_threshold_val("w1_bmat"))
-                                    bowl_thresh = st.session_state.get("w1_wick", get_threshold_val("w1_wick"))
-                                    bowl_match_thresh = st.session_state.get("w1_mmat", get_threshold_val("w1_mmat"))
+                                if "premier" in name_lower:
+                                    bat_thresh = st.session_state.get("wp_runs", get_threshold_val("wp_runs"))
+                                    bat_match_thresh = st.session_state.get("wp_bmat", get_threshold_val("wp_bmat"))
+                                    bowl_thresh = st.session_state.get("wp_wick", get_threshold_val("wp_wick"))
+                                    bowl_match_thresh = st.session_state.get("wp_mmat", get_threshold_val("wp_mmat"))
+                                elif "senior" in name_lower:
+                                    bat_thresh = st.session_state.get("ws1_runs", get_threshold_val("ws1_runs"))
+                                    bat_match_thresh = st.session_state.get("ws1_bmat", get_threshold_val("ws1_bmat"))
+                                    bowl_thresh = st.session_state.get("ws1_wick", get_threshold_val("ws1_wick"))
+                                    bowl_match_thresh = st.session_state.get("ws1_mmat", get_threshold_val("ws1_mmat"))
                                 else:
-                                    bat_thresh = st.session_state.get("w2_runs", get_threshold_val("w2_runs"))
-                                    bat_match_thresh = st.session_state.get("w2_bmat", get_threshold_val("w2_bmat"))
-                                    bowl_thresh = st.session_state.get("w2_wick", get_threshold_val("w2_wick"))
-                                    bowl_match_thresh = st.session_state.get("w2_mmat", get_threshold_val("w2_mmat"))
+                                    bat_thresh = st.session_state.get("wj1_runs", get_threshold_val("wj1_runs"))
+                                    bat_match_thresh = st.session_state.get("wj1_bmat", get_threshold_val("wj1_bmat"))
+                                    bowl_thresh = st.session_state.get("wj1_wick", get_threshold_val("wj1_wick"))
+                                    bowl_match_thresh = st.session_state.get("wj1_mmat", get_threshold_val("wj1_mmat"))
                             else:  # Men's
-                                if "premier" in name_lower or "senior league 1" in name_lower or "senior 1" in name_lower:
-                                    bat_thresh = st.session_state.get("t1_runs", get_threshold_val("t1_runs"))
-                                    bat_match_thresh = st.session_state.get("t1_bmat", get_threshold_val("t1_bmat"))
-                                    bowl_thresh = st.session_state.get("t1_wick", get_threshold_val("t1_wick"))
-                                    bowl_match_thresh = st.session_state.get("t1_mmat", get_threshold_val("t1_mmat"))
-                                elif "senior league 2" in name_lower or "senior league 3" in name_lower or "senior 2" in name_lower or "senior 3" in name_lower:
-                                    bat_thresh = st.session_state.get("t2_runs", get_threshold_val("t2_runs"))
-                                    bat_match_thresh = st.session_state.get("t2_bmat", get_threshold_val("t2_bmat"))
-                                    bowl_thresh = st.session_state.get("t2_wick", get_threshold_val("t2_wick"))
-                                    bowl_match_thresh = st.session_state.get("t2_mmat", get_threshold_val("t2_mmat"))
-                                elif "11a" in name_lower or "11b" in name_lower or "junior league 11" in name_lower:
-                                    bat_thresh = st.session_state.get("t4_runs", get_threshold_val("t4_runs"))
-                                    bat_match_thresh = st.session_state.get("t4_bmat", get_threshold_val("t4_bmat"))
-                                    bowl_thresh = st.session_state.get("t4_wick", get_threshold_val("t4_wick"))
-                                    bowl_match_thresh = st.session_state.get("t4_mmat", get_threshold_val("t4_mmat"))
+                                import re
+                                if "premier" in name_lower:
+                                    bat_thresh = st.session_state.get("p_runs", get_threshold_val("p_runs"))
+                                    bat_match_thresh = st.session_state.get("p_bmat", get_threshold_val("p_bmat"))
+                                    bowl_thresh = st.session_state.get("p_wick", get_threshold_val("p_wick"))
+                                    bowl_match_thresh = st.session_state.get("p_mmat", get_threshold_val("p_mmat"))
+                                elif "senior league 1" in name_lower or "senior 1" in name_lower:
+                                    bat_thresh = st.session_state.get("s1_runs", get_threshold_val("s1_runs"))
+                                    bat_match_thresh = st.session_state.get("s1_bmat", get_threshold_val("s1_bmat"))
+                                    bowl_thresh = st.session_state.get("s1_wick", get_threshold_val("s1_wick"))
+                                    bowl_match_thresh = st.session_state.get("s1_mmat", get_threshold_val("s1_mmat"))
+                                elif "senior league 2" in name_lower or "senior 2" in name_lower:
+                                    bat_thresh = st.session_state.get("s2_runs", get_threshold_val("s2_runs"))
+                                    bat_match_thresh = st.session_state.get("s2_bmat", get_threshold_val("s2_bmat"))
+                                    bowl_thresh = st.session_state.get("s2_wick", get_threshold_val("s2_wick"))
+                                    bowl_match_thresh = st.session_state.get("s2_mmat", get_threshold_val("s2_mmat"))
+                                elif "senior league 3" in name_lower or "senior 3" in name_lower:
+                                    bat_thresh = st.session_state.get("s3_runs", get_threshold_val("s3_runs"))
+                                    bat_match_thresh = st.session_state.get("s3_bmat", get_threshold_val("s3_bmat"))
+                                    bowl_thresh = st.session_state.get("s3_wick", get_threshold_val("s3_wick"))
+                                    bowl_match_thresh = st.session_state.get("s3_mmat", get_threshold_val("s3_mmat"))
                                 else:
-                                    bat_thresh = st.session_state.get("t3_runs", get_threshold_val("t3_runs"))
-                                    bat_match_thresh = st.session_state.get("t3_bmat", get_threshold_val("t3_bmat"))
-                                    bowl_thresh = st.session_state.get("t3_wick", get_threshold_val("t3_wick"))
-                                    bowl_match_thresh = st.session_state.get("t3_mmat", get_threshold_val("t3_mmat"))
+                                    j_match = re.search(r'junior league (11a|11b|11c|\d+)', name_lower)
+                                    if j_match:
+                                        j_id = j_match.group(1)
+                                        bat_thresh = st.session_state.get(f"j{j_id}_runs", get_threshold_val(f"j{j_id}_runs"))
+                                        bat_match_thresh = st.session_state.get(f"j{j_id}_bmat", get_threshold_val(f"j{j_id}_bmat"))
+                                        bowl_thresh = st.session_state.get(f"j{j_id}_wick", get_threshold_val(f"j{j_id}_wick"))
+                                        bowl_match_thresh = st.session_state.get(f"j{j_id}_mmat", get_threshold_val(f"j{j_id}_mmat"))
+                                    else:
+                                        bat_thresh = st.session_state.get("t3_runs", get_threshold_val("t3_runs"))
+                                        bat_match_thresh = st.session_state.get("t3_bmat", get_threshold_val("t3_bmat"))
+                                        bowl_thresh = st.session_state.get("t3_wick", get_threshold_val("t3_wick"))
+                                        bowl_match_thresh = st.session_state.get("t3_mmat", get_threshold_val("t3_mmat"))
 
                             bat_qual_col = 'Innings'
                             bat_qual_label = 'innings'
