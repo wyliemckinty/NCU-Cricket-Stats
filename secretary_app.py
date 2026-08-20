@@ -344,9 +344,26 @@ if app_mode == "Player Word Doc Generator":
                     def format_player_display(name):
                         pure = name.split(' (')[0].strip()
                         club_clean = get_club_for_player(name)
+                        
+                        # Check for transfer date
+                        transfer_suffix = ""
+                        try:
+                            df_reg = st.session_state.reg_players
+                            name_col = '_computed_name' if '_computed_name' in df_reg.columns else ('Full Name' if 'Full Name' in df_reg.columns else df_reg.columns[0])
+                            reg_match = df_reg[df_reg[name_col].astype(str).str.strip().str.lower() == pure.lower()]
+                            if not reg_match.empty and 'Transfer Date' in reg_match.columns:
+                                t_date = reg_match.iloc[0]['Transfer Date']
+                                if pd.notna(t_date):
+                                    day = t_date.day
+                                    suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
+                                    formatted_date = f"{day}{suffix} {t_date.strftime('%B %Y')}"
+                                    transfer_suffix = f" (transferred {formatted_date})"
+                        except:
+                            pass
+
                         p_aliases = eng.get_player_aliases(pure, aliases_df)
-                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean})"
-                        return f"{pure} ({club_clean})"
+                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean}){transfer_suffix}"
+                        return f"{pure} ({club_clean}){transfer_suffix}"
 
                     if len(unique_players) == 1:
                         active_player = unique_players[0]

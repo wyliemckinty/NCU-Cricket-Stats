@@ -297,7 +297,7 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None):
                 clubs_found.append(val)
         
         for keyword in ['Primary Club', 'Transfer', 'Wylie', 'Club']:
-            cols = [c for c in reg_players.columns if keyword in str(c) and c != 'Individual Membership Primary Club']
+            cols = [c for c in reg_players.columns if keyword in str(c) and c != 'Individual Membership Primary Club' and 'Date' not in str(c)]
             for col in cols:
                 if pd.notna(r[col]) and str(r[col]).strip() and str(r[col]).lower() != 'nan':
                     val = str(r[col]).strip()
@@ -986,17 +986,24 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                 reg_match = reg_players_df[reg_players_df[name_col].astype(str).str.strip().str.lower() == reg_search_name.lower()]
 
         if not reg_match.empty:
+            primary_cols = [c for c in reg_match.columns if 'Primary Club' in str(c) and 'Wylie' not in str(c)]
+            if primary_cols and len(reg_match[primary_cols[0]].dropna().values) > 0 and str(reg_match[primary_cols[0]].dropna().values[0]).strip() != '': 
+                primary_club = str(reg_match[primary_cols[0]].dropna().values[0]).strip()
+                
             for keyword in ['Wylie', 'Transfer']:
                 cols = [c for c in reg_match.columns if keyword in str(c)]
                 if cols and len(reg_match[cols[0]].dropna().values) > 0 and str(reg_match[cols[0]].dropna().values[0]).strip() != '':
-                    club_name = str(reg_match[cols[0]].dropna().values[0]).strip()
+                    transfer_club = str(reg_match[cols[0]].dropna().values[0]).strip()
                     break
-            if club_name == "Unknown_Club":
-                primary_cols = [c for c in reg_match.columns if 'Primary Club' in str(c) and 'Wylie' not in str(c)]
-                if primary_cols and len(reg_match[primary_cols[0]].dropna().values) > 0 and str(reg_match[primary_cols[0]].dropna().values[0]).strip() != '': 
-                    club_name = str(reg_match[primary_cols[0]].dropna().values[0]).strip()
                     
-    if club_name == "Unknown_Club":
+            if 'Transfer Date' in reg_match.columns:
+                td_val = reg_match['Transfer Date'].dropna().values
+                if len(td_val) > 0:
+                    transfer_date = pd.to_datetime(td_val[0], errors='coerce')
+                    
+            club_name = transfer_club if transfer_club != "Unknown_Club" else primary_club
+            
+    if primary_club == "Unknown_Club" and transfer_club == "Unknown_Club":
         groups_to_concat = []
         if player_batting is not None and not player_batting.empty and 'Group' in player_batting.columns:
             groups_to_concat.append(player_batting['Group'])
@@ -1005,45 +1012,24 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         all_groups_fallback = pd.concat(groups_to_concat).dropna().tolist() if groups_to_concat else []
         
         team_frequency = {}
+        def extract_base_club_name(team_str):
+            return re.sub(r'\s*(cc|club|1st|2nd|3rd|4th|5th|6th|1|2|3|4|5|6|xi|1st xi|2nd xi|3rd xi|4th xi|5th xi|6th xi)$', '', team_str, flags=re.IGNORECASE).strip()
+
         for grp in all_groups_fallback:
             if ' v ' in grp:
                 t1, t2 = grp.split(' v ')[0].strip(), grp.split(' v ')[1].split(',')[0].strip()
                 t1, t2 = doc_format_cricket_names(t1, domain), doc_format_cricket_names(t2, domain)
-                team_frequency[t1] = team_frequency.get(t1, 0) + 1
-                team_frequency[t2] = team_frequency.get(t2, 0) + 1
-        
+                
+                b1, b2 = extract_base_club_name(t1).strip(), extract_base_club_name(t2).strip()
+                team_frequency[b1] = team_frequency.get(b1, 0) + 1
+                team_frequency[b2] = team_frequency.get(b2, 0) + 1
+                
         if team_frequency:
-            sorted_teams = sorted(team_frequency.items(), key=lambda x: x[1], reverse=True)
-            if len(sorted_teams) > 1 and sorted_teams[0][1] > sorted_teams[1][1] and sorted_teams[0][1] > 1:
-                club_name = sorted_teams[0][0]
+            sorted_teams = sorted(team_frequency.items(), key=lambda item: item[1], reverse=True)
+            if sorted_teams:
+                primary_club = sorted_teams[0][0]
     
-    if ' (' in active_player: club_name = active_player.split(' (')[1].replace(')', '')
-    club_name_clean = doc_format_cricket_names(club_name, domain)
-
-    if not player_batting.empty and 'Group' in player_batting.columns:
-        player_batting['Team'] = player_batting['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
-    if not player_bowling.empty and 'Group' in player_bowling.columns:
-        player_bowling['Team'] = player_bowling['Group'].apply(lambda x: doc_get_player_team_from_match(x, club_name_clean))
-        
-    unique_teams = set()
-    if not player_batting.empty and 'Team' in player_batting.columns: unique_teams.update(player_batting['Team'].unique())
-    if not player_bowling.empty and 'Team' in player_bowling.columns: unique_teams.update(player_bowling['Team'].unique())
-    
-    if player_abandoned is not None and not player_abandoned.empty:
-        ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
-        for grp in player_abandoned[ab_match_col]:
-            unique_teams.add(doc_get_player_team_from_match(grp, club_name_clean))
-
-    unique_teams = sorted(list(unique_teams), key=doc_team_sort_key)
-
-    all_groups = []
-    if not player_batting.empty and 'Group' in player_batting.columns: all_groups.extend(player_batting['Group'].tolist())
-    if not player_bowling.empty and 'Group' in player_bowling.columns: all_groups.extend(player_bowling['Group'].tolist())
-    if player_abandoned is not None and not player_abandoned.empty:
-        ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
-        all_groups.extend(player_abandoned[ab_match_col].tolist())
-
-    unique_groups = list(dict.fromkeys(all_groups)) 
+    if ' (' in active_player: primary_club = active_player.split(' (')[1].replace(')', '')
     
     def extract_match_date(grp_str):
         try:
@@ -1060,13 +1046,48 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                 dt = pd.to_datetime(match.group(1), dayfirst=True, errors='coerce')
                 if pd.notna(dt): return dt
         except: pass
-        return pd.Timestamp.min
+        return pd.NaT
 
+    def get_dynamic_club_for_match(grp_str):
+        if transfer_club == "Unknown_Club" or pd.isna(transfer_date):
+            return primary_club
+            
+        m_date = extract_match_date(grp_str)
+        if pd.isna(m_date) or m_date >= transfer_date:
+            return transfer_club
+        return primary_club
+
+    if not player_batting.empty and 'Group' in player_batting.columns:
+        player_batting['Team'] = player_batting['Group'].apply(lambda x: doc_get_player_team_from_match(x, doc_format_cricket_names(get_dynamic_club_for_match(x), domain)))
+    if not player_bowling.empty and 'Group' in player_bowling.columns:
+        player_bowling['Team'] = player_bowling['Group'].apply(lambda x: doc_get_player_team_from_match(x, doc_format_cricket_names(get_dynamic_club_for_match(x), domain)))
+        
+    unique_teams = set()
+    if not player_batting.empty and 'Team' in player_batting.columns: unique_teams.update(player_batting['Team'].unique())
+    if not player_bowling.empty and 'Team' in player_bowling.columns: unique_teams.update(player_bowling['Team'].unique())
+    
+    if player_abandoned is not None and not player_abandoned.empty:
+        ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
+        for grp in player_abandoned[ab_match_col]:
+            unique_teams.add(doc_get_player_team_from_match(grp, doc_format_cricket_names(get_dynamic_club_for_match(grp), domain)))
+
+    unique_teams = sorted(list(unique_teams), key=doc_team_sort_key)
+
+    all_groups = []
+    if not player_batting.empty and 'Group' in player_batting.columns: all_groups.extend(player_batting['Group'].tolist())
+    if not player_bowling.empty and 'Group' in player_bowling.columns: all_groups.extend(player_bowling['Group'].tolist())
+    if player_abandoned is not None and not player_abandoned.empty:
+        ab_match_col = 'Group' if 'Group' in player_abandoned.columns else ('Match' if 'Match' in player_abandoned.columns else player_abandoned.columns[0])
+        all_groups.extend(player_abandoned[ab_match_col].tolist())
+
+    unique_groups = list(dict.fromkeys(all_groups)) 
     unique_groups.sort(key=extract_match_date)
+    
+    club_name_clean = doc_format_cricket_names(transfer_club if transfer_club != "Unknown_Club" else primary_club, domain)
     
     matches_by_team = {}
     for grp in unique_groups:
-        team_played_for = doc_get_player_team_from_match(grp, club_name_clean)
+        team_played_for = doc_get_player_team_from_match(grp, doc_format_cricket_names(get_dynamic_club_for_match(grp), domain))
         
         b_row = player_batting[player_batting['Group'] == grp] if not player_batting.empty else pd.DataFrame()
         bw_row = player_bowling[player_bowling['Group'] == grp] if not player_bowling.empty else pd.DataFrame()
@@ -1089,16 +1110,15 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             o = bw_row.iloc[0]['Overs']
             o_str = str(o).replace('.0', '') if str(o).endswith('.0') else str(o)
             m = int(bw_row.iloc[0]['Maidens']) if pd.notna(bw_row.iloc[0]['Maidens']) else 0
-            r = int(bw_row.iloc[0]['Runs']) if pd.notna(bw_row.iloc[0]['Runs']) else 0
             w = int(bw_row.iloc[0]['Wickets']) if pd.notna(bw_row.iloc[0]['Wickets']) else 0
+            r = int(bw_row.iloc[0]['Runs']) if pd.notna(bw_row.iloc[0]['Runs']) else 0
             bowl_str = f"Bowling: {o_str}-{m}-{r}-{w}"
         elif is_ab:
             bowl_str = "Bowling: Abandoned match"
         else: 
             bowl_str = "Bowling: Did not bowl"
             
-        if team_played_for not in matches_by_team: matches_by_team[team_played_for] = []
-        matches_by_team[team_played_for].append({'match': grp, 'bat_str': bat_str, 'bowl_str': bowl_str})
+        matches_by_team.setdefault(team_played_for, []).append({'match': grp, 'bat_str': bat_str, 'bowl_str': bowl_str})
 
     doc = Document()
     style_normal = doc.styles['Normal']
@@ -1711,6 +1731,19 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
             if pd.notna(raw_club) and str(raw_club).strip() != '': reg_club = str(raw_club).strip()
+            
+            t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
+            transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
+            transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
+            if pd.notna(transfer_club) and str(transfer_club).strip() != '' and pd.notna(transfer_date):
+                mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+                played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+                played_base = extract_base_club_name(played_for).lower()
+                t_base = extract_base_club_name(str(transfer_club)).lower()
+                if t_base in played_base or played_base in t_base:
+                    reg_date = pd.to_datetime(transfer_date)
+                    reg_club = str(transfer_club).strip()
+                    
             if pd.notna(reg_date) and reg_date <= match_date: is_registered = True
                 
         if not is_registered:
@@ -2060,6 +2093,19 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
             if pd.notna(raw_club) and str(raw_club).strip() != '': reg_club = str(raw_club).strip()
+            
+            t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
+            transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
+            transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
+            if pd.notna(transfer_club) and str(transfer_club).strip() != '' and pd.notna(transfer_date):
+                mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+                played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+                played_base = extract_base_club_name(played_for).lower()
+                t_base = extract_base_club_name(str(transfer_club)).lower()
+                if t_base in played_base or played_base in t_base:
+                    reg_date = pd.to_datetime(transfer_date)
+                    reg_club = str(transfer_club).strip()
+                    
             if pd.notna(reg_date) and reg_date <= match_date: is_registered = True
                 
         if not is_registered:
