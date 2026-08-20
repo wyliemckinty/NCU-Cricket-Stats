@@ -1177,8 +1177,8 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             
         grp_display = f"{grp} ({comp_name})"
         grp_display = grp_display.replace(", TBC -", " -").replace(", TBC ", " ")
-        import re
         grp_display = re.sub(r'City of Belfast Playing Fields\s*\(.*?\)', 'City of Belfast Playing Fields', grp_display, flags=re.IGNORECASE)
+
 
         if not b_row.empty and b_row.iloc[0]['Innings'] > 0:
             hs = b_row.iloc[0]['High Score']
