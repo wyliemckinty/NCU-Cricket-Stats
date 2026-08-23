@@ -1833,6 +1833,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
 
         is_registered = False
         reg_date, reg_club = pd.NaT, "Unknown Club"
+        status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
@@ -1841,19 +1842,38 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
             transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
-            if pd.notna(transfer_club) and str(transfer_club).strip() != '' and pd.notna(transfer_date):
-                mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-                played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
-                played_base = extract_base_club_name(played_for).lower()
-                t_base = extract_base_club_name(str(transfer_club)).lower()
-                if t_base in played_base or played_base in t_base:
+            
+            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_base = extract_base_club_name(played_for).lower()
+            
+            r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
+            t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
+            
+            played_for_transfer = bool(t_base and str(transfer_club).strip() != '' and (t_base in played_base or played_base in t_base))
+            played_for_primary = bool(r_base and str(raw_club).strip() != '' and (r_base in played_base or played_base in r_base))
+            
+            if played_for_transfer:
+                reg_club = str(transfer_club).strip()
+                if pd.notna(transfer_date):
                     reg_date = pd.to_datetime(transfer_date)
-                    reg_club = str(transfer_club).strip()
-                    
-            if pd.notna(reg_date) and reg_date <= match_date: is_registered = True
+                
+                if pd.notna(reg_date) and reg_date <= match_date:
+                    is_registered = True
+                else:
+                    status_text = 'Unregistered for this match (Played for transfer club, but transfer date is late or missing)'
+            elif played_for_primary:
+                if pd.notna(reg_date) and reg_date <= match_date:
+                    if pd.notna(transfer_date) and pd.to_datetime(transfer_date) <= match_date:
+                        status_text = 'Unregistered for this match (Played for former primary club AFTER transferring away)'
+                    else:
+                        is_registered = True
+                else:
+                    status_text = 'Unregistered for this match (Registered late)'
+            else:
+                status_text = f'Unregistered / Played for Wrong Club (Registered to {reg_club})'
                 
         if not is_registered:
-            status_text = 'Unregistered for this match' if not reg_record.empty else 'Unregistered / Missing completely'
             f_match_logic = match_type if not reg_record.empty else 'Failed'
             f_matched_name = matched_name if not reg_record.empty else 'NO MATCH FOUND'
             
@@ -2204,6 +2224,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
 
         is_registered = False
         reg_date, reg_club = pd.NaT, "Unknown Club"
+        status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
@@ -2212,19 +2233,38 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
             transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
-            if pd.notna(transfer_club) and str(transfer_club).strip() != '' and pd.notna(transfer_date):
-                mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-                played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
-                played_base = extract_base_club_name(played_for).lower()
-                t_base = extract_base_club_name(str(transfer_club)).lower()
-                if t_base in played_base or played_base in t_base:
+            
+            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_base = extract_base_club_name(played_for).lower()
+            
+            r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
+            t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
+            
+            played_for_transfer = bool(t_base and str(transfer_club).strip() != '' and (t_base in played_base or played_base in t_base))
+            played_for_primary = bool(r_base and str(raw_club).strip() != '' and (r_base in played_base or played_base in r_base))
+            
+            if played_for_transfer:
+                reg_club = str(transfer_club).strip()
+                if pd.notna(transfer_date):
                     reg_date = pd.to_datetime(transfer_date)
-                    reg_club = str(transfer_club).strip()
-                    
-            if pd.notna(reg_date) and reg_date <= match_date: is_registered = True
+                
+                if pd.notna(reg_date) and reg_date <= match_date:
+                    is_registered = True
+                else:
+                    status_text = 'Unregistered for this match (Played for transfer club, but transfer date is late or missing)'
+            elif played_for_primary:
+                if pd.notna(reg_date) and reg_date <= match_date:
+                    if pd.notna(transfer_date) and pd.to_datetime(transfer_date) <= match_date:
+                        status_text = 'Unregistered for this match (Played for former primary club AFTER transferring away)'
+                    else:
+                        is_registered = True
+                else:
+                    status_text = 'Unregistered for this match (Registered late)'
+            else:
+                status_text = f'Unregistered / Played for Wrong Club (Registered to {reg_club})'
                 
         if not is_registered:
-            status_text = 'Unregistered for this match' if not reg_record.empty else 'Unregistered / Missing completely'
             f_match_logic = match_type if not reg_record.empty else 'Failed'
             f_matched_name = matched_name if not reg_record.empty else 'NO MATCH FOUND'
             
