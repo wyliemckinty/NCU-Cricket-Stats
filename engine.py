@@ -2025,8 +2025,13 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         p_p.add_run(f"{t_str}")
         
         r_date = r['Date Registered']
-        if pd.notna(r_date): d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
-        else: d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
+        status = r.get('Status', '')
+        if 'Played for Wrong Club' in status:
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
+        elif pd.notna(r_date):
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
+        else:
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
@@ -2453,8 +2458,13 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         p_p.add_run(f"{t_str}")
         
         r_date = r['Date Registered']
-        if pd.notna(r_date): d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
-        else: d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
+        status = r.get('Status', '')
+        if 'Played for Wrong Club' in status:
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
+        elif pd.notna(r_date):
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
+        else:
+            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
