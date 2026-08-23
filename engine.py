@@ -1748,7 +1748,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     official_names = registered_players[reg_name_col].dropna().unique()
     deemed_registered, unregistered_audit, starring_violations = [], [], []
     all_matches_in_range, violation_matches = set(), set()
-    first_unreg_match_date, player_match_cache = {}, {}
+    first_unreg_match_date, first_unreg_match_team, player_match_cache = {}, {}, {}
 
     for idx, row in all_appearances.iterrows():
         player, scorecard_name, match_date = row['Player'], row['Scorecard Name'], row['Match Date']
@@ -1804,7 +1804,12 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                         potential_matches = registered_players[registered_players[reg_name_col] == best_match]
                 
                 if not potential_matches.empty:
-                    reg_record = potential_matches[potential_matches['Individual Membership Primary Club'].astype(str).str.contains(club_hint, case=False, na=False)]
+                    clean_hint = clean_club_for_matching(club_hint)
+                    def check_club_or_transfer(r):
+                        if clean_hint in clean_club_for_matching(r.get('Individual Membership Primary Club', '')): return True
+                        t_cols = [c for c in r.index if 'Transfer' in str(c) and 'Date' not in str(c)]
+                        return clean_hint in clean_club_for_matching(r.get(t_cols[0], '')) if t_cols else False
+                    reg_record = potential_matches[potential_matches.apply(check_club_or_transfer, axis=1)]
                     if not reg_record.empty:
                         match_type, matched_name = f"Duplicate Match ({club_hint})", reg_record.iloc[0][reg_name_col]
                     else:
@@ -1854,6 +1859,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             
             if player not in first_unreg_match_date:
                 first_unreg_match_date[player] = match_date
+                first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, domain)
                 if in_date_range:
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
@@ -1868,6 +1874,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
+                        'Deemed Registered Club': extract_base_club_name(str(first_unreg_match_team[player])),
                         'Date Registered': reg_date, 'Team A': team_a, 'Team B': team_b,
                         'Match League': match_league, 'Match Logic': f_match_logic
                     })
@@ -1988,7 +1995,9 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     for r in deemed_registered:
         p_name, s_name = r['Stats Name (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        deemed_club = r.get('Deemed Registered Club')
+        club_display = f"Deemed Registered Club: {doc_formal_team_name(deemed_club)}" if deemed_club else f"Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}"
+        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2133,7 +2142,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     official_names = registered_players[reg_name_col].dropna().unique()
     deemed_registered, unregistered_audit, starring_violations = [], [], []
     all_matches_in_range, violation_matches = set(), set()
-    first_unreg_match_date, player_match_cache = {}, {}
+    first_unreg_match_date, first_unreg_match_team, player_match_cache = {}, {}, {}
 
     for idx, row in all_appearances.iterrows():
         player, scorecard_name, match_date = row['Player'], row['Scorecard Name'], row['Match Date']
@@ -2166,7 +2175,12 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                         potential_matches = registered_players[registered_players[reg_name_col] == best_match]
                 
                 if not potential_matches.empty:
-                    reg_record = potential_matches[potential_matches['Individual Membership Primary Club'].astype(str).str.contains(club_hint, case=False, na=False)]
+                    clean_hint = clean_club_for_matching(club_hint)
+                    def check_club_or_transfer(r):
+                        if clean_hint in clean_club_for_matching(r.get('Individual Membership Primary Club', '')): return True
+                        t_cols = [c for c in r.index if 'Transfer' in str(c) and 'Date' not in str(c)]
+                        return clean_hint in clean_club_for_matching(r.get(t_cols[0], '')) if t_cols else False
+                    reg_record = potential_matches[potential_matches.apply(check_club_or_transfer, axis=1)]
                     if not reg_record.empty:
                         match_type, matched_name = f"Duplicate Match ({club_hint})", reg_record.iloc[0][reg_name_col]
                     else:
@@ -2216,6 +2230,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             
             if player not in first_unreg_match_date:
                 first_unreg_match_date[player] = match_date
+                first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, domain)
                 if in_date_range:
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
@@ -2230,6 +2245,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
+                        'Deemed Registered Club': extract_base_club_name(str(first_unreg_match_team[player])),
                         'Date Registered': reg_date, 'Team A': team_a, 'Team B': team_b,
                         'Match League': match_league, 'Match Logic': f_match_logic
                     })
@@ -2357,7 +2373,9 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     for r in deemed_registered:
         p_name, s_name = r['Stats Name (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        deemed_club = r.get('Deemed Registered Club')
+        club_display = f"Deemed Registered Club: {doc_formal_team_name(deemed_club)}" if deemed_club else f"Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}"
+        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
