@@ -1700,6 +1700,10 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         if starring_data_list: starring_df = pd.concat(starring_data_list, ignore_index=True)
 
     alias_map = build_alias_map(aliases, domain)
+    f_secondary = DEFAULT_FILES.get(domain, {}).get("secondary", "")
+    secondary_map = {}
+    if os.path.exists(f_secondary):
+        secondary_map = build_secondary_team_map(pd.read_excel(f_secondary), alias_map)
     
     f_unreg = DEFAULT_FILES.get(domain, {}).get("unreg", "")
     unreg_df = None
@@ -1779,7 +1783,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                 continue
                 
             mock_row = {'Cleaned Name': player, 'Group': row['Group']}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain, secondary_map=secondary_map)
             if not get_team_league(played_for, team_keys, league_dict, domain):
                 continue
 
@@ -1836,7 +1840,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
             mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain, secondary_map=secondary_map)
             played_base = extract_base_club_name(played_for).lower()
 
             if len(reg_record) > 1:
@@ -1868,6 +1872,16 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             played_for_transfer = bool(t_base and str(transfer_club).strip() != '' and (t_base in played_base or played_base in t_base))
             played_for_primary = bool(r_base and str(raw_club).strip() != '' and (r_base in played_base or played_base in r_base))
             
+            played_for_secondary = False
+            if secondary_map:
+                mapped_name = alias_map.get(player.lower(), player.lower())
+                sec_teams = secondary_map.get(mapped_name) or secondary_map.get(player.lower()) or []
+                for st in sec_teams:
+                    st_base = extract_base_club_name(st).lower()
+                    if st_base in played_base or played_base in st_base:
+                        played_for_secondary = True
+                        break
+            
             if played_for_transfer:
                 reg_club = str(transfer_club).strip()
                 if pd.notna(transfer_date):
@@ -1877,7 +1891,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     is_registered = True
                 else:
                     status_text = 'Unregistered for this match (Played for transfer club, but transfer date is late or missing)'
-            elif played_for_primary:
+            elif played_for_primary or played_for_secondary:
                 if pd.notna(reg_date) and reg_date <= match_date:
                     if pd.notna(transfer_date) and pd.to_datetime(transfer_date) <= match_date:
                         status_text = 'Unregistered for this match (Played for former primary club AFTER transferring away)'
@@ -2113,6 +2127,10 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         if starring_data_list: starring_df = pd.concat(starring_data_list, ignore_index=True)
 
     alias_map = build_alias_map(aliases, "Midweek")
+    f_secondary = DEFAULT_FILES.get("Midweek", {}).get("secondary", "")
+    secondary_map = {}
+    if os.path.exists(f_secondary):
+        secondary_map = build_secondary_team_map(pd.read_excel(f_secondary), alias_map)
     
     f_unreg = DEFAULT_FILES.get("Midweek", {}).get("unreg", "")
     unreg_df = None
@@ -2242,7 +2260,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
             mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain, secondary_map=secondary_map)
             played_base = extract_base_club_name(played_for).lower()
 
             if len(reg_record) > 1:
@@ -2274,6 +2292,16 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             played_for_transfer = bool(t_base and str(transfer_club).strip() != '' and (t_base in played_base or played_base in t_base))
             played_for_primary = bool(r_base and str(raw_club).strip() != '' and (r_base in played_base or played_base in r_base))
             
+            played_for_secondary = False
+            if secondary_map:
+                mapped_name = alias_map.get(player.lower(), player.lower())
+                sec_teams = secondary_map.get(mapped_name) or secondary_map.get(player.lower()) or []
+                for st in sec_teams:
+                    st_base = extract_base_club_name(st).lower()
+                    if st_base in played_base or played_base in st_base:
+                        played_for_secondary = True
+                        break
+            
             if played_for_transfer:
                 reg_club = str(transfer_club).strip()
                 if pd.notna(transfer_date):
@@ -2283,7 +2311,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     is_registered = True
                 else:
                     status_text = 'Unregistered for this match (Played for transfer club, but transfer date is late or missing)'
-            elif played_for_primary:
+            elif played_for_primary or played_for_secondary:
                 if pd.notna(reg_date) and reg_date <= match_date:
                     if pd.notna(transfer_date) and pd.to_datetime(transfer_date) <= match_date:
                         status_text = 'Unregistered for this match (Played for former primary club AFTER transferring away)'
@@ -3574,7 +3602,7 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
         
     def process_milestone_row(row, is_batting):
         scorecard_name = str(row['Name'] if is_batting else row['Bowler']).strip()
-        team_played = determine_player_team_for_row(row, player_club_map, domain)
+        team_played = determine_player_team_for_row(row, player_club_map, domain, secondary_map=secondary_map)
         grp = str(row['Group'])
         t1, t2 = extract_teams_from_group(grp)
         opponent = t2 if team_played == t1 else t1
