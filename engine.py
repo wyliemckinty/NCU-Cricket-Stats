@@ -1835,6 +1835,25 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         reg_date, reg_club = pd.NaT, "Unknown Club"
         status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
+            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_base = extract_base_club_name(played_for).lower()
+
+            if len(reg_record) > 1:
+                def matches_played_club(r):
+                    r_raw = r.get('Individual Membership Primary Club', '')
+                    r_b = extract_base_club_name(str(r_raw)).lower() if pd.notna(r_raw) else ""
+                    t_cols = [c for c in r.index if 'Transfer' in str(c) and 'Date' not in str(c)]
+                    t_raw = r.get(t_cols[0], '') if t_cols else ''
+                    t_b = extract_base_club_name(str(t_raw)).lower() if pd.notna(t_raw) else ""
+                    return bool(r_b and str(r_raw).strip() != '' and (r_b in played_base or played_base in r_b)) or \
+                           bool(t_b and str(t_raw).strip() != '' and (t_b in played_base or played_base in t_b))
+                
+                filtered = reg_record[reg_record.apply(matches_played_club, axis=1)]
+                if not filtered.empty:
+                    reg_record = filtered
+                    match_type, matched_name = f"Exact (Disambiguated via {played_base})", reg_record.iloc[0][reg_name_col]
+
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
             if pd.notna(raw_club) and str(raw_club).strip() != '': reg_club = str(raw_club).strip()
@@ -1842,10 +1861,6 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
             transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
-            
-            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
-            played_base = extract_base_club_name(played_for).lower()
             
             r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
             t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
@@ -2024,7 +2039,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         p_p.add_run(f"{t_str}")
         
         r_date = r['Date Registered']
-        r_det = f"Registered late on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
+        r_det = f"Registered on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
@@ -2226,6 +2241,25 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         reg_date, reg_club = pd.NaT, "Unknown Club"
         status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
+            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
+            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
+            played_base = extract_base_club_name(played_for).lower()
+
+            if len(reg_record) > 1:
+                def matches_played_club(r):
+                    r_raw = r.get('Individual Membership Primary Club', '')
+                    r_b = extract_base_club_name(str(r_raw)).lower() if pd.notna(r_raw) else ""
+                    t_cols = [c for c in r.index if 'Transfer' in str(c) and 'Date' not in str(c)]
+                    t_raw = r.get(t_cols[0], '') if t_cols else ''
+                    t_b = extract_base_club_name(str(t_raw)).lower() if pd.notna(t_raw) else ""
+                    return bool(r_b and str(r_raw).strip() != '' and (r_b in played_base or played_base in r_b)) or \
+                           bool(t_b and str(t_raw).strip() != '' and (t_b in played_base or played_base in t_b))
+                
+                filtered = reg_record[reg_record.apply(matches_played_club, axis=1)]
+                if not filtered.empty:
+                    reg_record = filtered
+                    match_type, matched_name = f"Exact (Disambiguated via {played_base})", reg_record.iloc[0][reg_name_col]
+
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
             if pd.notna(raw_club) and str(raw_club).strip() != '': reg_club = str(raw_club).strip()
@@ -2233,10 +2267,6 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
             transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
-            
-            mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain)
-            played_base = extract_base_club_name(played_for).lower()
             
             r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
             t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
@@ -2422,7 +2452,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         p_p.add_run(f"{t_str}")
         
         r_date = r['Date Registered']
-        r_det = f"Registered late on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
+        r_det = f"Registered on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
