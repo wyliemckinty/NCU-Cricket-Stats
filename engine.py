@@ -661,6 +661,10 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
         elif c2_cnt > c1_cnt: return t2
         return t1
         
+    if is_pathway_match and reg_val and str(reg_val).lower() != 'nan':
+        primary_reg_club = str(reg_val).split('/')[0].strip()
+        return f"{primary_reg_club} (Pathway)"
+        
     # If we couldn't match the teams to the player's known clubs, we do NOT fallback to 
     # their registered club's 1st XI, as this artificially inflates Premier League stats
     # when scorers make mistakes (e.g., adding a Woodvale player to a Dundrum v Templepatrick match).
@@ -2265,7 +2269,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         status_text = 'Unregistered / Missing completely'
         if not reg_record.empty:
             mock_row = {'Cleaned Name': player, 'Group': row.get('Group', '')}
-            played_for = determine_player_team_for_row(mock_row, player_club_map, domain, secondary_map=secondary_map)
+            played_for = determine_player_team_for_row(mock_row, player_club_map, "Midweek", secondary_map=secondary_map)
             played_base = extract_base_club_name(played_for).lower()
 
             if len(reg_record) > 1:
@@ -2333,7 +2337,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             
             if player not in first_unreg_match_date:
                 first_unreg_match_date[player] = match_date
-                first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, domain)
+                first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, "Midweek")
                 if in_date_range:
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
