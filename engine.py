@@ -960,23 +960,42 @@ def doc_team_sort_key(team_name):
     if words and words[-1].isdigit(): return (team_name.rsplit(' ', 1)[0], int(words[-1]))
     return (team_name, 1)
 
-def add_bullet_point(doc, text, level=1, space_after=0, line_spacing=0.9):
+def add_bullet_point(doc, text, level=1, space_after=0, line_spacing=0.9, bold_substring=None):
     style_name = 'List Bullet' if level == 1 else f'List Bullet {level}'
+    
+    def apply_bold(p, full_text, prefix="", f_size=11):
+        if bold_substring and bold_substring in full_text:
+            parts = full_text.split(bold_substring, 1)
+            
+            if prefix or parts[0]:
+                r1 = p.add_run(prefix + parts[0])
+                r1.font.name, r1.font.size = 'Calibri', Pt(f_size)
+            
+            r2 = p.add_run(bold_substring)
+            r2.font.name, r2.font.size = 'Calibri', Pt(f_size)
+            r2.bold = True
+            
+            if parts[1]:
+                r3 = p.add_run(parts[1])
+                r3.font.name, r3.font.size = 'Calibri', Pt(f_size)
+        else:
+            r = p.add_run(prefix + full_text)
+            r.font.name, r.font.size = 'Calibri', Pt(f_size)
+
     try:
         p = doc.add_paragraph(style=style_name)
         p.paragraph_format.space_after = Pt(space_after)
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.line_spacing = line_spacing
-        run = p.add_run(text)
-        run.font.name, run.font.size = 'Calibri', Pt(11) 
+        apply_bold(p, text, f_size=11)
     except KeyError:
         p = doc.add_paragraph()
         p.paragraph_format.space_after = Pt(space_after)
         p.paragraph_format.space_before = Pt(0)
         p.paragraph_format.line_spacing = line_spacing
         p.paragraph_format.left_indent = Pt(18 * level)
-        run = p.add_run(f"{'·' if level == 1 else 'o'}\t{text}")
-        run.font.name, run.font.size = 'Calibri', Pt(10) 
+        prefix = f"{'·' if level == 1 else 'o'}\t"
+        apply_bold(p, text, prefix=prefix, f_size=10) 
 
 def add_custom_heading(doc, text, level):
     p = doc.add_paragraph()
@@ -1032,6 +1051,8 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     primary_club = "Unknown_Club"
     transfer_club = "Unknown_Club"
     transfer_date = None
+    transfer_club_2 = "Unknown_Club"
+    transfer_date_2 = None
     if active_player.lower() == 'neil brand' and domain != "Women's":
         club_name = 'Muckamore'
     else:
@@ -1063,10 +1084,22 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                     transfer_club = str(reg_match[cols[0]].dropna().values[0]).strip()
                     break
                     
-            if 'Transfer Date' in reg_match.columns:
-                td_val = reg_match['Transfer Date'].dropna().values
+            t1_date_cols = [c for c in reg_match.columns if 'Transfer Date' in str(c) and '2' not in str(c)]
+            if t1_date_cols:
+                td_val = reg_match[t1_date_cols[0]].dropna().values
                 if len(td_val) > 0:
-                    transfer_date = pd.to_datetime(td_val[0], errors='coerce')
+                    transfer_date = pd.to_datetime(td_val[0], errors='coerce', dayfirst=True)
+
+            for kw in ['Transfer Club 2', 'Club Transfer 2']:
+                cols = [c for c in reg_match.columns if kw.lower() in str(c).lower()]
+                if cols and len(reg_match[cols[0]].dropna().values) > 0 and str(reg_match[cols[0]].dropna().values[0]).strip() != '':
+                    transfer_club_2 = str(reg_match[cols[0]].dropna().values[0]).strip()
+                    break
+
+            if 'Transfer Date 2' in reg_match.columns:
+                td2_val = reg_match['Transfer Date 2'].dropna().values
+                if len(td2_val) > 0:
+                    transfer_date_2 = pd.to_datetime(td2_val[0], errors='coerce', dayfirst=True)
                     
             club_name = transfer_club if transfer_club != "Unknown_Club" else primary_club
             
@@ -1116,7 +1149,28 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         return pd.NaT
 
     def get_dynamic_club_for_match(grp_str):
-        if transfer_club == "Unknown_Club" or pd.isna(transfer_date):
+        if transfer_club == "Unknown_Club":
+            return primary_club
+            
+        m_date = extract_match_date(grp_str)
+        if pd.notna(transfer_date_2) and pd.notna(m_date) and m_date >= transfer_date_2:
+            return transfer_club_2 if transfer_club_2 != "Unknown_Club" else primary_club
+            
+        if pd.isna(transfer_date):
+            grp_lower = str(grp_str).lower()
+            import re
+            t_clean = str(transfer_club).lower()
+            t_clean = re.sub(r'\s*(cricket club|cc|club)$', '', t_clean).strip()
+            p_clean = str(primary_club).lower()
+            p_clean = re.sub(r'\s*(cricket club|cc|club)$', '', p_clean).strip()
+            
+            # If both clubs are in the string (they played each other), we default to primary club
+            # to avoid falsely assuming they transferred early
+            if t_clean in grp_lower and p_clean in grp_lower:
+                return primary_club
+                
+            if t_clean in grp_lower:
+                return transfer_club
             return primary_club
             
         m_date = extract_match_date(grp_str)
@@ -1181,6 +1235,8 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             
         grp_display = f"{grp} ({comp_name})"
         grp_display = grp_display.replace(", TBC -", " -").replace(", TBC ", " ")
+        if is_ab:
+            grp_display += " (abandoned)"
         grp_display = re.sub(r'City of Belfast Playing Fields\s*\(.*?\)', 'City of Belfast Playing Fields', grp_display, flags=re.IGNORECASE)
 
 
@@ -1206,18 +1262,27 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             bowl_str = "Bowling: Did not bowl"
             
         parts = grp.rsplit(' - ', 1)
-        date_str = parts[1].strip() if len(parts) == 2 else grp
+        date_str = parts[1].split(' (')[0].strip() if len(parts) == 2 else grp.split(' (')[0].strip()
         clean_date_str = re.sub(r'(?<=\d)(st|nd|rd|th)\b', '', date_str, flags=re.IGNORECASE)
         match_date = pd.to_datetime(clean_date_str, dayfirst=True, errors='coerce')
         if pd.isna(match_date): match_date = pd.Timestamp.min
         
-        matches_by_team.setdefault(team_played_for, []).append({'match': grp_display, 'bat_str': bat_str, 'bowl_str': bowl_str, 'date': match_date})
+        matches_by_team.setdefault(team_played_for, []).append({'match': grp_display, 'bat_str': bat_str, 'bowl_str': bowl_str, 'date': match_date, 'team': team_played_for})
 
     doc = Document()
     style_normal = doc.styles['Normal']
     style_normal.font.name, style_normal.font.size = 'Calibri', Pt(11) 
     
-    header_club_name = re.sub(r'(?i)\s*cricket club', '', club_name_clean).strip()
+    if transfer_club != "Unknown_Club" and primary_club != "Unknown_Club" and transfer_club.strip().lower() != primary_club.strip().lower():
+        p_clean = re.sub(r'(?i)\s*cricket club', '', doc_format_cricket_names(primary_club, domain)).strip()
+        t_clean = re.sub(r'(?i)\s*cricket club', '', doc_format_cricket_names(transfer_club, domain)).strip()
+        header_club_name = f"{p_clean} / {t_clean}"
+        if transfer_club_2 != "Unknown_Club" and transfer_club_2.strip().lower() != transfer_club.strip().lower():
+            t2_clean = re.sub(r'(?i)\s*cricket club', '', doc_format_cricket_names(transfer_club_2, domain)).strip()
+            if t2_clean.lower() != p_clean.lower():
+                header_club_name = f"{p_clean} / {t_clean} / {t2_clean}"
+    else:
+        header_club_name = re.sub(r'(?i)\s*cricket club', '', club_name_clean).strip()
     display_player_name = active_player.split(' (')[0].title()
     
     domain_label = "Open" if domain == "Men's" else ("Women" if domain == "Women's" else "Midweek")
@@ -1231,14 +1296,56 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     
     add_custom_heading(doc, "Chronological Match Appearances", level=2)
     
+    p_sub = doc.add_paragraph()
+    p_sub.paragraph_format.space_before = Pt(0)
+    p_sub.paragraph_format.space_after = Pt(8)
+    run_sub = p_sub.add_run("(Registered/Transferred to team in bold)")
+    run_sub.font.name, run_sub.font.size = 'Calibri', Pt(9)
+    run_sub.italic = True
+    run_sub.bold = True
+    
     all_matches = []
     for team, m_list in matches_by_team.items():
         all_matches.extend(m_list)
         
     all_matches.sort(key=lambda x: x['date'])
     
+    t1_base = ""
+    t2_base = ""
+    if transfer_club != "Unknown_Club" and primary_club != "Unknown_Club" and transfer_club.strip().lower() != primary_club.strip().lower():
+        t1_base = re.sub(r'(?i)\s*(cricket club|cc|club)$', '', str(transfer_club).lower()).strip()
+        if transfer_club_2 != "Unknown_Club" and transfer_club_2.strip().lower() != transfer_club.strip().lower():
+            t2_base = re.sub(r'(?i)\s*(cricket club|cc|club)$', '', str(transfer_club_2).lower()).strip()
+
+    phase = 0
     for i, m in enumerate(all_matches):
-        add_bullet_point(doc, m['match'], level=1, space_after=11 if i < len(all_matches) - 1 else 18, line_spacing=1.1)
+        team_str = str(m.get('team', '')).lower()
+        is_valid_team = bool(m.get('team') and m.get('team') != "Unknown Team" and not team_str.startswith("unknown ("))
+        
+        trigger_transfer = False
+        if is_valid_team:
+            if phase == 0 and t1_base and t1_base in team_str:
+                trigger_transfer = True
+                phase = 1
+            elif phase == 1 and t2_base and t2_base in team_str:
+                trigger_transfer = True
+                phase = 2
+
+        if trigger_transfer and i > 0:
+            if len(doc.paragraphs) > 0:
+                doc.paragraphs[-1].paragraph_format.space_after = Pt(0)
+            
+            p_trans = doc.add_paragraph()
+            p_trans.paragraph_format.left_indent = Pt(18)
+            p_trans.paragraph_format.space_before = Pt(11)
+            p_trans.paragraph_format.space_after = Pt(0)
+            p_trans.paragraph_format.line_spacing = 0.9
+            run_trans = p_trans.add_run("(player transferred)")
+            run_trans.font.name, run_trans.font.size = 'Calibri', Pt(10)
+            run_trans.italic = True
+                
+        bold_team = m.get('team') if m.get('team') and m.get('team') != "Unknown Team" and not m.get('team', '').startswith("Unknown (") else None
+        add_bullet_point(doc, m['match'], level=1, space_after=11 if i < len(all_matches) - 1 else 18, line_spacing=1.1, bold_substring=bold_team)
         
     add_custom_heading(doc, "Batting Statistics", level=2)
 
@@ -1360,10 +1467,20 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         p.style.font.name, p.style.font.size = 'Calibri', Pt(11)
 
     add_custom_heading(doc, "Match Appearances", level=2)
+    
+    p_sub2 = doc.add_paragraph()
+    p_sub2.paragraph_format.space_before = Pt(0)
+    p_sub2.paragraph_format.space_after = Pt(8)
+    run_sub2 = p_sub2.add_run("(Registered/Transferred to team in bold)")
+    run_sub2.font.name, run_sub2.font.size = 'Calibri', Pt(9)
+    run_sub2.italic = True
+    run_sub2.bold = True
+    
     for team in sorted(matches_by_team.keys(), key=doc_team_sort_key):
         add_custom_heading(doc, team, level=3)
         for m in matches_by_team[team]:
-            add_bullet_point(doc, m['match'], level=1)
+            bold_team = m.get('team') if m.get('team') and m.get('team') != "Unknown Team" and not m.get('team', '').startswith("Unknown (") else None
+            add_bullet_point(doc, m['match'], level=1, bold_substring=bold_team)
             add_bullet_point(doc, m['bat_str'], level=2)
             add_bullet_point(doc, m['bowl_str'], level=2, space_after=4)
             
