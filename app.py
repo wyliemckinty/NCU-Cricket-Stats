@@ -402,7 +402,7 @@ if app_mode == "Player Word Doc Generator":
                             pass
 
                         p_aliases = eng.get_player_aliases(pure, aliases_df)
-                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean}){transfer_suffix}"
+                        if p_aliases: return f"{' / '.join(p_aliases)} ({club_clean}){transfer_suffix}"
                         return f"{pure} ({club_clean}){transfer_suffix}"
 
                     if len(unique_players) == 1:

@@ -1487,7 +1487,10 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     doc_io = io.BytesIO()
     doc.save(doc_io)
     
-    filename_player = active_player.split(' (')[0].title().replace(' ', '_')
+    if aliases_list:
+        filename_player = aliases_list[0].title().replace(' ', '_')
+    else:
+        filename_player = active_player.split(' (')[0].title().replace(' ', '_')
     filename = f"{filename_player}_{club_name_clean.replace(' ', '_')}_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.docx"
     
     return doc_io, filename
