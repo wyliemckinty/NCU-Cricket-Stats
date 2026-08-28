@@ -551,11 +551,6 @@ if app_mode == "Bulk Averages Calculator":
                                 eng.format_excel_sheet(writer, fielding_df, f"{tab_prefix} Field")
                     
                     st.success("✅ Averages calculated successfully!")
-                    tab_preview_bat, tab_preview_bowl = st.tabs(["🏏 Batting Preview", "🔮 Bowling Preview"])
-                    with tab_preview_bat: st.dataframe(batting_avgs.head(50), width="stretch", hide_index=True)
-                    with tab_preview_bowl: st.dataframe(bowling_avgs.head(50), width="stretch", hide_index=True)
-                    
-                    st.divider()
                     prefix = domain.replace("'", "")
                     file_out_name = f"{prefix}_Season_Averages_All_Leagues_{datetime.now().strftime('%Y-%m-%d_%H%M%S')}.xlsx"
                     st.download_button("📥 Download Output Excel File", data=output_buffer.getvalue(), file_name=file_out_name, mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", type="primary")

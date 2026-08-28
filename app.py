@@ -25,15 +25,6 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ==========================================
-# UI CUSTOMIZATION SETTINGS
-# ==========================================
-# Change these values to adjust text sizes in the Contacts Directory. 
-# You can use standard CSS sizes like "18px", "24px", "1.2rem", etc.
-UI_CLUB_HEADER_SIZE = "22px"
-UI_ROLE_TITLE_SIZE = "18px"
-UI_OFFICIAL_NAME_SIZE = "16px"
-
-# ==========================================
 # STREAMLIT CACHED EXCEL LOADERS
 # ==========================================
 def get_excel_df(filepath):
@@ -83,7 +74,6 @@ MAIN_HEADER_SIZE = "28px"
 CONFIG_FILE = "threshold_settings.json"
 
 PAGE_TITLES = {
-    "bulk_averages": "📊 League Bulk Averages Calculator",
     "player_doc": "📄 Player Word Doc Generator",
     "reg_checks": "🛡️ Weekend Registration and Starring Checks",
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
@@ -91,7 +81,8 @@ PAGE_TITLES = {
     "fines_generator": "💸 Club Fines Generator",
     "unregistered_fines": "💸 Unregistered Player Fines Generator",
     "milestones_report": "🏆 League Milestones Report",
-    "club_contacts": "📇 Club Contacts & Officials Directory"
+    "club_contacts": "📇 Club Contacts & Officials Directory",
+    "audit": "💰 Registration Fee Audit"
 }
 
 DEFAULT_THRESHOLDS = {
@@ -101,7 +92,7 @@ DEFAULT_THRESHOLDS = {
     "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
     "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
     "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
-    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5, "mw_min_bowl_innings": 0
+    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
 }
 
 def init_threshold_store():
@@ -181,6 +172,7 @@ with st.sidebar:
             "Club Fines Generator",
             "Unregistered Player Fines Generator",
             "Club Contacts Directory",
+            "Registration Fee Audit",
         ]
     )
     st.divider()
@@ -207,12 +199,10 @@ if app_mode == "Player Word Doc Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
-                f_league = st.text_input("League Structure (Excel)", value=c_files.get("league", ""), key=f"doc_league_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"doc_cup_{domain}")
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"))
+            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=False)
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -262,24 +252,16 @@ if app_mode == "Player Word Doc Generator":
                             if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                         alias_map = eng.build_alias_map(aliases, domain)
-                        f_unreg = eng.DEFAULT_FILES.get(domain, {}).get("unreg", "")
-                        unreg_df = get_excel_df(f_unreg) if os.path.exists(f_unreg) else None
-                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
-                        player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
+                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
                         
                         def resolve_duplicates(row, name_col):
                             name = str(row[name_col])
                             row_team = str(row.get('Team', '')).lower()
                             match_grp = str(row.get('Group', row.get('Match', ''))).lower()
-                            combined_context = row_team + ' ' + match_grp
                             if domain == "Men's" and name in eng.KNOWN_DUPLICATES:
                                 for club in eng.KNOWN_DUPLICATES[name]:
-                                    # Check all known aliases/abbreviations for this club
-                                    # Use word-boundary regex to avoid 'CI' matching inside 'City' or 'CSNI'
-                                    variants = eng.CLUB_ALIASES.get(club, [club])
-                                    for variant in variants:
-                                        if re.search(r'\b' + re.escape(variant.lower()) + r'\b', combined_context):
-                                            return f"{name} ({club})"
+                                    if club.lower() in row_team or club.lower() in match_grp:
+                                        return f"{name} ({club})"
                             return name
                         
                         batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
@@ -309,20 +291,9 @@ if app_mode == "Player Word Doc Generator":
                                 if clean_q in str(row.iloc[0]).lower() or clean_q in str(row.iloc[1]).lower():
                                     target_official_names.add(str(row.iloc[1]).strip())
 
-                        if '_computed_name' in reg_players.columns:
-                            reg_matches = reg_players[reg_players['_computed_name'].astype(str).str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(reg_matches['_computed_name'].dropna().astype(str).str.strip().tolist())
-                        elif 'Full Name' in reg_players.columns:
+                        if 'Full Name' in reg_players.columns:
                             reg_matches = reg_players[reg_players['Full Name'].astype(str).str.contains(clean_q, case=False, na=False)]
                             target_official_names.update(reg_matches['Full Name'].dropna().astype(str).str.strip().tolist())
-                        elif 'First Name' in reg_players.columns and 'Last Name' in reg_players.columns:
-                            comp = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Last Name'].astype(str).str.strip()
-                            reg_matches = reg_players[comp.str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(comp[reg_matches.index].dropna().astype(str).str.strip().tolist())
-                        elif 'First Name' in reg_players.columns and 'Surname' in reg_players.columns:
-                            comp = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Surname'].astype(str).str.strip()
-                            reg_matches = reg_players[comp.str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(comp[reg_matches.index].dropna().astype(str).str.strip().tolist())
 
                         bat_direct = batting[batting['Name'].astype(str).str.contains(clean_q, case=False, na=False)]['Name'].unique().tolist()
                         bowl_direct = bowling[bowling['Bowler'].astype(str).str.contains(clean_q, case=False, na=False)]['Bowler'].unique().tolist()
@@ -384,26 +355,9 @@ if app_mode == "Player Word Doc Generator":
                     def format_player_display(name):
                         pure = name.split(' (')[0].strip()
                         club_clean = get_club_for_player(name)
-                        
-                        # Check for transfer date
-                        transfer_suffix = ""
-                        try:
-                            df_reg = st.session_state.reg_players
-                            name_col = '_computed_name' if '_computed_name' in df_reg.columns else ('Full Name' if 'Full Name' in df_reg.columns else df_reg.columns[0])
-                            reg_match = df_reg[df_reg[name_col].astype(str).str.strip().str.lower() == pure.lower()]
-                            if not reg_match.empty and 'Transfer Date' in reg_match.columns:
-                                t_date = reg_match.iloc[0]['Transfer Date']
-                                if pd.notna(t_date):
-                                    day = t_date.day
-                                    suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-                                    formatted_date = f"{day}{suffix} {t_date.strftime('%B %Y')}"
-                                    transfer_suffix = f" (transferred {formatted_date})"
-                        except:
-                            pass
-
                         p_aliases = eng.get_player_aliases(pure, aliases_df)
-                        if p_aliases: return f"{' / '.join(p_aliases)} ({club_clean}){transfer_suffix}"
-                        return f"{pure} ({club_clean}){transfer_suffix}"
+                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean})"
+                        return f"{pure} ({club_clean})"
 
                     if len(unique_players) == 1:
                         active_player = unique_players[0]
@@ -415,10 +369,7 @@ if app_mode == "Player Word Doc Generator":
                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                         
-                        league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
-                        cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
-                        league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
+                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
                         st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
@@ -434,10 +385,7 @@ if app_mode == "Player Word Doc Generator":
                                 p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                 p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                                 
-                                league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
-                                cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
-                                league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
+                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
                                 st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
                             else:
                                 zip_buffer = io.BytesIO()
@@ -448,10 +396,7 @@ if app_mode == "Player Word Doc Generator":
                                         p_bat = matched_batting[matched_batting['Name'] == active_player]
                                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
-                                        league_df = get_excel_df(f_league) if os.path.exists(f_league) else pd.DataFrame()
-                                        cup_df = get_excel_df(f_cup) if os.path.exists(f_cup) else pd.DataFrame()
-                                        league_dict = league_df.set_index(league_df.columns[0])[league_df.columns[1]].to_dict() if not league_df.empty else {}
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
+                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
@@ -490,7 +435,7 @@ elif app_mode == "Registration Checks":
         
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"))
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False)
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -537,18 +482,24 @@ elif app_mode == "Registration Checks":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Audit Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-                        with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+#                         with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        pass
+#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        pass
+#                         with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+                        pass
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+#                                 with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+                                pass
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+                                pass
                             if star_count > 0:
-                                with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+#                                 with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+                                pass
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -558,7 +509,7 @@ elif app_mode == "Registration Checks":
                             zip_file.writestr(f"{prefix}_Audit_Database_{date_str}.xlsx", excel_io.getvalue())
                             zip_file.writestr(f"{prefix}_Audit_Report_{date_str}.docx", doc_io.getvalue())
                                 
-                        st.download_button("📦 Download Audit Results (ZIP)", data=zip_buffer.getvalue(), file_name=f"{prefix}_Registration_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
+                        st.download_button("📦 Download Audit Results (ZIP)", data=zip_buffer.getvalue(), file_name=f"{domain.replace('''s''', '')}_Registration_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
 
@@ -619,18 +570,24 @@ elif app_mode == "Midweek Registration & Starring Check":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Midweek Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-                        with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+#                         with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        pass
+#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        pass
+#                         with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+                        pass
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+#                                 with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+                                pass
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+                                pass
                             if star_count > 0:
-                                with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+#                                 with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+                                pass
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -655,7 +612,7 @@ elif app_mode == "Starring & Inactivity Reports":
 
     include_irish = False
     if domain == "Men's":
-        include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="star_include_irish")
+        include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
 
     with st.sidebar:
         st.divider() 
@@ -699,12 +656,13 @@ elif app_mode == "Starring & Inactivity Reports":
                     st.success("✅ Reports generated successfully!")
                     st.subheader("📊 Exporter Output Summary")
                     col_star1, col_star2 = st.columns(2)
-                    with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
-                    with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
+#                     with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
+                    pass
+#                     with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
+                    pass
                     
                     st.divider()
-                    prefix = domain.replace("'", "")
-                    st.download_button("📥 Download Club Reports (ZIP)", data=zip_buffer.getvalue(), file_name=f"{prefix}_Starring_Reports_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
+                    st.download_button("📥 Download Club Reports (ZIP)", data=zip_buffer.getvalue(), file_name=f"{domain.replace('''s''', '')}_Starring_Reports_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
                 except Exception as e:
                     st.error(f"An error occurred during processing: {str(e)}")
 
@@ -746,7 +704,7 @@ elif app_mode == "Club Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="fines_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="fines_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -794,9 +752,8 @@ elif app_mode == "Club Fines Generator":
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_club_fines_report(audit_excel_io, forfeit_path, start_ts, end_ts)
-                        prefix = domain.replace("'", "")
                         st.success("✅ Fines report generated successfully!")
-                        st.download_button(f"📥 Download {domain} Fines Report (Word)", data=doc_io.getvalue(), file_name=f"NCU_{prefix}_Fines_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")  
+                        st.download_button(f"📥 Download {domain} Fines Report (Word)", data=doc_io.getvalue(), file_name=f"NCU_{domain.replace('''s''', '')}_Fines_Report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")  
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
 
@@ -838,7 +795,7 @@ elif app_mode == "Unregistered Player Fines Generator":
 
         include_irish = False
         if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Audit?", value=os.path.exists("Irish Competitions 2026 Batting stats.xlsx"), key="unreg_irish_check")
+            include_irish = st.toggle("Include Irish Competitions in Audit?", value=False, key="unreg_irish_check")
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
@@ -876,9 +833,8 @@ elif app_mode == "Unregistered Player Fines Generator":
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_unregistered_fines_only(audit_excel_io)
-                        prefix = domain.replace("'", "")
                         st.success("✅ Unregistered Fines report generated successfully!")
-                        st.download_button(f"📥 Download {domain} Unregistered Fines Report (Word)", data=doc_io.getvalue(), file_name=f"NCU_{prefix}_Unreg_Fines_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
+                        st.download_button(f"📥 Download {domain} Unregistered Fines Report (Word)", data=doc_io.getvalue(), file_name=f"NCU_{domain.replace('''s''', '')}_Unreg_Fines_{datetime.now().strftime('%Y%m%d_%H%M%S')}.docx", mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
 
@@ -951,8 +907,7 @@ elif app_mode == "Club Contacts Directory":
                     filtered_view = club_matches
 
                 st.divider()
-                # Using custom font size instead of st.subheader
-                st.markdown(f"<div style='font-size: {UI_CLUB_HEADER_SIZE}; font-weight: bold; padding-top: 1rem; padding-bottom: 1rem;'>📌 {selected_club} — {selected_tier}</div>", unsafe_allow_html=True)
+                st.subheader(f"📌 {selected_club} — {selected_tier}")
 
                 if filtered_view.empty:
                     st.info(f"No contact records found for {selected_club} under {selected_tier}.")
@@ -967,8 +922,8 @@ elif app_mode == "Club Contacts Directory":
                                 phone_val = row.get('Phone', '')
                                 email_val = row.get('Email', '')
 
-                                st.markdown(f"<div style='font-size: {UI_ROLE_TITLE_SIZE}; font-weight: bold; margin-bottom: 0.25rem;'>{role_title}</div>", unsafe_allow_html=True)
-                                st.markdown(f"<div style='font-size: {UI_OFFICIAL_NAME_SIZE}; margin-bottom: 0.25rem;'>👤 <b>{official_name}</b></div>", unsafe_allow_html=True)
+                                st.markdown(f"### {role_title}")
+                                st.markdown(f"**👤 {official_name}**")
                                 st.markdown(f"**Category:** `{row.get('Team Tier', 'General')}`")
                                 st.markdown(format_tel_link(phone_val), unsafe_allow_html=True)
                                 st.markdown(format_mail_link(email_val), unsafe_allow_html=True)
@@ -997,7 +952,7 @@ elif app_mode == "Club Contacts Directory":
                     
                     display_table = role_df[['Club', 'Name', 'Direct Phone', 'Direct Email', 'Team Tier']].sort_values(by='Club')
                     st.markdown(
-                        display_table.to_html(escape=False, index=False, justify='left'), 
+                        display_table.to_html(escape=False, index=False), 
                         unsafe_allow_html=True
                     )
 
@@ -1027,6 +982,51 @@ elif app_mode == "Club Contacts Directory":
                     matched_rows['Direct Email'] = matched_rows['Email'].apply(format_mail_link)
                     
                     st.markdown(
-                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False, justify='left'),
+                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False),
                         unsafe_allow_html=True
                     )
+# ==========================================
+# TOOL 8: REGISTRATION FEE AUDIT
+# ==========================================
+elif app_mode == "Registration Fee Audit":
+    st.title("💰 Registration Fee Audit")
+    st.info("💡 **Tip:** Cross-references registrations, aliases, revenue, and match appearances to generate a 100% reconciled fee audit.")
+    
+    with st.container(border=True):
+        st.subheader("📁 Input Files")
+        st.markdown("Ensure the following files are present in the working directory:")
+        st.markdown("- `1. NCU_Registered_Players.xlsx`")
+        st.markdown("- `2. NCU_Validated_Aliases_Master.xlsx`")
+        st.markdown("- `12. NCU_Validated_Women's Aliases_Master.xlsx`")
+        st.markdown("- `Player_Registrations_for_2026_with_DOB-2026-08-27T095733.csv`")
+        st.markdown("- The raw Sport80 Revenue Report (e.g. `revenue_report_il_from_*.xlsx`)")
+        st.markdown("- *Plus the standard NV Play stats files (Sat, Women, Midweek)*")
+        
+        if st.button("🚀 Run Registration Fee Audit", type="primary"):
+            with st.spinner("Processing audit (this may take 10-20 seconds)..."):
+                try:
+                    audit_file, timestamped_filename, df_summary, _ = eng.run_registration_fee_audit()
+                    st.session_state['audit_outputs'] = (audit_file, timestamped_filename)
+                except Exception as e:
+                    st.error(f"❌ Error during audit: {str(e)}")
+        
+        if 'audit_outputs' in st.session_state:
+            excel_io, doc_io = st.session_state['audit_outputs']
+            st.success(f"✅ Audit complete! Your reports are ready to download below.")
+            
+            zip_buffer = io.BytesIO()
+            with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
+                # Need timestamp for filename inside zip
+                date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                zip_file.writestr(f"NCU_Registration_Fee_Audit_{date_str}.xlsx", excel_io.getvalue())
+                zip_file.writestr(f"NCU_Revenue_Anomalies_Report_{date_str}.docx", doc_io.getvalue())
+                    
+            st.download_button(
+                label="📦 Download Audit Results (ZIP)",
+                data=zip_buffer.getvalue(),
+                file_name=f"NCU_Registration_Fee_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip",
+                mime="application/zip",
+                use_container_width=True,
+                type="primary",
+                key="dl_audit_zip"
+            )

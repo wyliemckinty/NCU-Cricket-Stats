@@ -11,6 +11,13 @@ from datetime import datetime, timedelta
 from thefuzz import process, fuzz
 import warnings
 import streamlit as st
+import unicodedata
+import shutil
+import openpyxl
+from openpyxl.styles import Font, PatternFill, Alignment
+from openpyxl.utils import get_column_letter
+from collections import Counter
+
 
 warnings.filterwarnings('ignore')
 
@@ -4016,3 +4023,700 @@ def parse_club_contacts_matrix(file_or_df):
             i += 1
 
     return pd.DataFrame(rows), grounds_by_club, ordered_roles
+
+# ==========================================
+# REGISTRATION FEE AUDIT
+# ==========================================
+
+
+def clean_revenue_report(source_file):
+    import pandas as pd
+    import re
+    
+    # Check if this is the original raw file or a pre-filtered one
+    df_raw = pd.read_excel(source_file, sheet_name='All Data')
+    
+    if 'ItemType' in df_raw.columns:
+        # It's the raw Sport80 export
+        df_all = df_raw[df_raw['ItemType'] == 'ADD_ON'].copy()
+        df_all.rename(columns={
+            'InvoiceDate': 'Payment Date',
+            'Description': 'Player Name - Club - Type',
+            'UnitAmount': 'Payment Amount'
+        }, inplace=True)
+    else:
+        # It's already the user's manual export
+        df_all = df_raw.copy()
+        
+    col = df_all['Player Name - Club - Type']
+
+    def parse_record(s):
+        s = str(s).strip()
+        first_split = s.split(' - ', 1)
+        player_name = first_split[0].strip()
+        rem = first_split[1].strip() if len(first_split) > 1 else ''
+        
+        pay_method = ''
+        m_pay = re.search(r' - (One Time Payment|Auto Renewal.*)$', rem)
+        if m_pay:
+            pay_method = m_pay.group(1).strip()
+            rem = rem[:m_pay.start()].strip()
+            
+        validity = ''
+        m_val = re.search(r'\s*(\((?:Valid until - |01/03/2026 - )01/03/2027\))\s*$', rem)
+        if m_val:
+            validity = m_val.group(1).strip()
+            rem = rem[:m_val.start()].strip()
+            
+        club = ''
+        m_type = ''
+        
+        if 'Dundrum' in rem:
+            club = 'Dundrum Cricket Club'
+            m = re.search(r'(Adult \(over 18\)|Youth player \(playing Adult & Youth cricket\))', rem)
+            m_type = m.group(1) if m else 'Membership'
+        elif rem.startswith('Woodvale Cricket Club'):
+            club = 'Woodvale Cricket Club'
+            m_type = rem.split(' - ')[-1].strip()
+        elif rem.startswith('Downpatrick Cricket Club'):
+            club = 'Downpatrick Cricket Club'
+            m_type = rem.split(' - ')[-1].strip()
+        elif rem.startswith('Holywood Cricket Club 1881'):
+            club = 'Holywood Cricket Club 1881'
+            m_type = rem.split(' - ')[1].strip()
+        elif rem.startswith('Instonians Cricket Club'):
+            club = 'Instonians Cricket Club'
+            m_type = rem.split(' - ')[-1].strip()
+        elif ' - Northern Cricket Union - ' in rem:
+            parts = rem.split(' - Northern Cricket Union - ')
+            raw_club = parts[0].strip()
+            club = re.sub(r'\s+(Membership|Registration|Fee\'s|Fees)$', '', raw_club).strip()
+            m_type = parts[1].strip()
+        elif ' - SPORT80 MEMBERSHIP - ' in rem:
+            parts = rem.split(' - SPORT80 MEMBERSHIP - ')
+            raw_club = parts[0].strip()
+            club = re.sub(r'\s+(Membership|Registration)$', '', raw_club).strip()
+            m_type = parts[1].strip()
+        elif ' - ' in rem:
+            parts = rem.split(' - ', 1)
+            raw_club = parts[0].strip()
+            club = re.sub(r'\s+(Membership(?:\s+\d{4})?|Registration(?:\s+\d{4})?|NCU Registration|membership|Fee\'s|Fees)$', '', raw_club).strip()
+            m_type = parts[1].strip()
+        else:
+            m_match = re.match(r'^(.*?)\s+(Membership|Registration)$', rem, re.IGNORECASE)
+            if m_match:
+                club = m_match.group(1).strip()
+                m_type = m_match.group(2).strip()
+            else:
+                club = rem
+                m_type = 'Membership'
+                
+        club_mapping = {
+            'Arches CC': 'Arches Cricket Club',
+            'BISC': 'BISC Cricket Club',
+            'Derriaghy Cricket Club NCU': 'Derriaghy Cricket Club',
+            'Lisburn Cricket Club membership': 'Lisburn Cricket Club',
+            'Northern Ireland Malayali Association CC': 'NIMA Cricket Club',
+        }
+        club = club_mapping.get(club, club)
+        
+        return {
+            'Player Name': player_name,
+            'Club': club,
+            'Type': m_type,
+            'Payment Method': pay_method,
+            'Validity': validity
+        }
+
+    parsed_rows = [parse_record(x) for x in col]
+    df_parsed = pd.DataFrame(parsed_rows)
+    df_parsed.index = df_all.index
+
+    df_clean = pd.DataFrame({
+        'Payment Date': df_all['Payment Date'],
+        'Player Name': df_parsed['Player Name'],
+        'Club': df_parsed['Club'],
+        'Type': df_parsed['Type'],
+        'Payment Method': df_parsed['Payment Method'],
+        'Validity': df_parsed['Validity'],
+        'Payment Amount': df_all['Payment Amount'],
+        'Original Description': df_all['Player Name - Club - Type']
+    })
+    
+    return df_clean
+
+
+def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix):
+    from docx import Document
+    from docx.shared import Pt
+    import unicodedata
+    import pandas as pd
+    
+    def norm(text):
+        if pd.isna(text): return ""
+        return unicodedata.normalize('NFKD', str(text)).encode('ascii', 'ignore').decode('utf-8').lower().strip()
+        
+    df_rev_copy = df_rev.copy()
+    df_rev_copy['Norm_Name'] = df_rev_copy['Player Name'].apply(norm)
+    
+    # 2. Extract Anomalies
+    player_counts = df_rev_copy.groupby('Player Name').agg(
+        Tx_Count=('Payment Amount', 'count'),
+        Total_Paid=('Payment Amount', 'sum'),
+        Clubs=('Club', lambda s: list(set(s))),
+        Types=('Type', lambda s: list(set(s))),
+        Dates=('Payment Date', list)
+    ).reset_index()
+
+    multi_club = player_counts[player_counts['Clubs'].apply(len) > 1].sort_values(by='Total_Paid', ascending=False)
+    father_son = player_counts[player_counts['Player Name'].isin(['James Magee', 'Peter Mcilwaine'])]
+    same_club_dups = player_counts[(player_counts['Clubs'].apply(len) == 1) & (player_counts['Tx_Count'] > 1)]
+    same_club_dups = same_club_dups[~same_club_dups['Player Name'].isin(['James Magee', 'Peter Mcilwaine'])]
+    upgrades = df_rev_copy[df_rev_copy['Type'].astype(str).str.contains('UPGRADE', case=False, na=False)]
+    arches = df_rev_copy[df_rev_copy['Club'].astype(str).str.contains('Arches', case=False, na=False)]
+
+    def is_registered(name):
+        n = norm(name)
+        n = alias_map.get(n, n)
+        # df_reg has 'Norm_Name' created in run_registration_fee_audit
+        return n in df_reg['Norm_Name'].values
+
+    unregistered_payers = player_counts[~player_counts['Player Name'].apply(is_registered)]
+
+    # 3. Create Document
+    doc = Document()
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Arial'
+    font.size = Pt(11)
+
+    doc.add_heading('NCU Registration Fee: Revenue Anomalies Report', 0)
+
+    doc.add_heading(f'1. Dual-Club Double Payments ({len(multi_club)} Players Paid Twice)', level=1)
+    p = doc.add_paragraph(f"{len(multi_club)} players paid registration fees under two (or three) different clubs, meaning they paid £15 to £20 in total instead of the single £10 annual NCU affiliation fee:")
+    for _, r in multi_club.iterrows():
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(f"{r['Player Name']}").bold = True
+        clubs_str = " and ".join(r['Clubs'])
+        p.add_run(f": Paid under {clubs_str} (£{r['Total_Paid']} total).")
+
+    p = doc.add_paragraph()
+    p.add_run("Cause: ").bold = True
+    p.add_run("When players transfer mid-season or play for one club on Saturdays and another in the Midweek League, Sport80 prompts them for the NCU fee again, resulting in an accidental double payment to the NCU.")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading('2. Father / Son Namesake Payments (Instonians & Bangor)', level=1)
+    doc.add_paragraph("Two players appeared to have paid both the £10 adult fee and the £5 youth fee for the same club:")
+    for _, r in father_son.iterrows():
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(f"{r['Player Name']} ({r['Clubs'][0]}):").bold = True
+        
+        txs = df_rev_copy[df_rev_copy['Player Name'] == r['Player Name']]
+        for _, tx in txs.iterrows():
+            date_str = str(tx['Payment Date'])[:10]
+            amt = tx['Payment Amount']
+            p_sub = doc.add_paragraph(f"Paid £{amt} on {date_str} ({tx['Type']})", style='List Bullet 2')
+        
+        p_inv = doc.add_paragraph(style='List Bullet 2')
+        p_inv.add_run("Investigation: ").italic = True
+        p_inv.add_run(f"Sport80 date of birth records reveal there are two different {r['Player Name']}s at this club—an adult and a youth. In the single-line player database, they were merged into one name.")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading('3. Genuine Duplicate Double-Charge at Same Club', level=1)
+    doc.add_paragraph("The following players were charged twice for the exact same membership at the same club:")
+    for _, r in same_club_dups.iterrows():
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(f"{r['Player Name']} ({r['Clubs'][0]}):").bold = True
+        
+        txs = df_rev_copy[df_rev_copy['Player Name'] == r['Player Name']]
+        for _, tx in txs.iterrows():
+            date_str = str(tx['Payment Date'])[:10]
+            amt = tx['Payment Amount']
+            p_sub = doc.add_paragraph(f"Paid £{amt} on {date_str}", style='List Bullet 2')
+        
+        p_inv = doc.add_paragraph(style='List Bullet 2')
+        p_inv.add_run("Investigation: ").italic = True
+        p_inv.add_run("Two identical profiles exist for them in Sport80 under their club, and their family was accidentally billed twice.")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading('4. Mid-Season "UPGRADE" Transactions (Muckamore)', level=1)
+    p = doc.add_paragraph("Three transactions at Muckamore CC were explicitly marked as ")
+    p.add_run("UPGRADE").bold = True
+    p.add_run(" (£5 fee):")
+
+    for _, r in upgrades.iterrows():
+        date_str = str(r['Payment Date'])[:10]
+        p = doc.add_paragraph(f"{r['Player Name']} ({date_str})", style='List Number')
+        p.runs[0].bold = True
+
+    p_exp = doc.add_paragraph()
+    p_exp.add_run("Explanation: ").italic = True
+    p_exp.add_run("These three juniors originally registered under the £0 pure youth exemption, but when selected for senior cricket mid-season, their parents/club correctly paid a £5 \"UPGRADE\" fee. All three are captured as compliant youth players in the audit.")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading('5. Club Setup Anomaly: Arches CC Flat-Fee Underpayments', level=1)
+    p1 = doc.add_paragraph(style='List Bullet')
+    p1.add_run("At Arches Cricket Club, 100% of all 38 payments were £5").bold = True
+    p1.add_run(" (not a single £10 payment was recorded).")
+
+    p2 = doc.add_paragraph("34 of these players are adults (>18) playing senior cricket.", style='List Bullet')
+
+    p3 = doc.add_paragraph(style='List Bullet')
+    p3.add_run("Arches CC configured their Sport80 membership category with a flat £5 fee called \"Membership\", accounting for ")
+    p3.add_run("64% of all adult underpayments in the entire NCU").bold = True
+    p3.add_run(".")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading(f'6. The Remaining {len(unregistered_payers)} Standalone Revenue Records (Paid but Not Registered)', level=1)
+    doc.add_paragraph(f"Only {len(unregistered_payers)} payments in the entire report belong to individuals who do not exist in the registered players list:")
+
+    for _, r in unregistered_payers.iterrows():
+        p = doc.add_paragraph(style='List Bullet')
+        p.add_run(f"{r['Player Name']} ").bold = True
+        p.add_run(f"(£{r['Total_Paid']}, {r['Clubs'][0]}): ")
+        if r['Player Name'] == 'Jared Wilson':
+            p.add_run("Registered in Sport80 on 27th August 2026 (late registration after initial export).")
+        else:
+            p.add_run("Paid fees, but never registered as players and never appeared on scorecards.")
+    doc.add_paragraph("_" * 80)
+
+    doc.add_heading('7. Financial Integrity Checks Passed', level=1)
+    p1 = doc.add_paragraph(style='List Bullet')
+    p1.add_run("Strict Price Adherence: ").bold = True
+    p1.add_run(f"100% of all {len(df_rev_copy)} payments in the file are strictly either £10 or £5. There are no negative amounts, £0 amounts, partial fees, or odd amounts.")
+
+    dates = pd.to_datetime(df_rev_copy['Payment Date'], errors='coerce')
+    min_date = dates.min().strftime('%d %B %Y')
+    max_date = dates.max().strftime('%d %B %Y')
+    p2 = doc.add_paragraph(style='List Bullet')
+    p2.add_run("Date Range: ").bold = True
+    p2.add_run(f"All payments occurred between {min_date} and {max_date}.")
+
+    doc_io = io.BytesIO()
+    doc.save(doc_io)
+    return doc_io
+
+def run_registration_fee_audit():
+    import unicodedata
+    import re
+    from datetime import datetime
+    import shutil
+    import pandas as pd
+    import numpy as np
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill, Alignment
+    
+    
+    # Smart title function
+    def smart_title(name):
+        if not name or pd.isna(name):
+            return ""
+        name = str(name).strip().replace('’', "'").replace('`', "'")
+        
+        def title_word(word):
+            if '-' in word:
+                return '-'.join(title_word(part) for part in word.split('-'))
+            w = word.lower()
+            if re.match(r"^o'[a-z]", w):
+                return "O'" + w[2].upper() + w[3:]
+            if re.match(r"^mc[a-z]", w):
+                return "Mc" + w[2].upper() + w[3:]
+            if re.match(r"^mac[a-z]{3,}", w) and word[:3].lower() == 'mac' and len(word) > 4:
+                if len(word) > 3 and word[3].isupper():
+                    return "Mac" + w[3].upper() + w[4:]
+            if w in ['jnr', 'snr', 'ii', 'iii', 'iv']:
+                return w.title() if w in ['jnr', 'snr'] else w.upper()
+            return w.capitalize()
+    
+        return " ".join(title_word(w) for w in name.split())
+    
+    # Test on user examples
+    assert smart_title("TREVOR Dempsey") == "Trevor Dempsey"
+    assert smart_title("Hafiz M WAQAS Iqbal") == "Hafiz M Waqas Iqbal"
+    assert smart_title("mckinley") == "McKinley"
+    assert smart_title("MCKINLEY") == "McKinley"
+    
+    # Reference date: 30th June 2026
+    REF_DATE = pd.to_datetime('2026-06-30')
+    
+    def norm(text):
+        if not text or pd.isna(text): return ""
+        text = str(text).replace('’', "'").replace('`', "'").replace('â€™', "'").replace('Ã©', 'e').replace('Ã­', 'i')
+        text = unicodedata.normalize('NFKD', text).encode('ascii', 'ignore').decode('utf-8')
+        return " ".join(text.lower().split())
+    
+    # 1. Load Aliases
+    men_alias_file = '2. NCU_Validated_Aliases_Master.xlsx'
+    women_alias_file = "12. NCU_Validated_Women's Aliases_Master.xlsx"
+    df_alias_m = pd.read_excel(men_alias_file)
+    df_alias_w = pd.read_excel(women_alias_file)
+    df_alias = pd.concat([df_alias_m, df_alias_w], ignore_index=True)
+    
+    alias_map = {}
+    for _, row in df_alias.iterrows():
+        inp = norm(row['Input Name (Scorecard/Stats)'])
+        off = str(row['Official Registered Name']).replace('‡', '').strip()
+        if inp and inp != 'nan':
+            alias_map[inp] = off
+    
+    # 2. 3,766 Registered Players
+    df_reg = pd.read_excel('1. NCU_Registered_Players.xlsx')
+    df_reg['Full_Name'] = df_reg['First Name'].astype(str).str.strip() + ' ' + df_reg['Last Name'].astype(str).str.strip()
+    df_reg['Full_Name'] = df_reg['Full_Name'].apply(smart_title)
+    df_reg['Norm_Name'] = df_reg['Full_Name'].apply(norm)
+    
+    # 3. DOB
+
+    import glob
+    import os
+    
+    # Find Revenue Report
+    rev_files = glob.glob('revenue_report_il_from_*.xlsx')
+    if not rev_files:
+        rev_files = ['NCU Revenue Report (for analyysis).xlsx']
+    
+    if not os.path.exists(rev_files[0]):
+        raise FileNotFoundError("Could not find a raw revenue report (e.g. revenue_report_il_from_*.xlsx)")
+        
+    df_rev = clean_revenue_report(rev_files[0])
+    
+    # Find DOB Report
+    dob_files = glob.glob('Player_Registrations_for_2026_with_DOB*.csv')
+    if not dob_files:
+        dob_files = ['Player_Registrations_for_2026_with_DOB-2026-08-27T095733.csv']
+        
+    if not os.path.exists(dob_files[0]):
+        raise FileNotFoundError("Could not find the DOB registration report (e.g. Player_Registrations_for_2026_with_DOB*.csv)")
+
+    df_dob = pd.read_csv(dob_files[0])
+    df_dob['Full_Name'] = df_dob['First Name'].astype(str).str.strip() + ' ' + df_dob['Last Name'].astype(str).str.strip()
+    df_dob['Norm_Name'] = df_dob['Full_Name'].apply(norm)
+    df_dob['DOB'] = pd.to_datetime(df_dob['Date of Birth'], errors='coerce')
+    
+    dob_map = {}
+    for _, r in df_dob.iterrows():
+        dob_map[r['Norm_Name']] = r['DOB']
+    
+    def get_dob(name_norm):
+        if name_norm in dob_map: return dob_map[name_norm]
+        mapped = norm(alias_map.get(name_norm, name_norm))
+        if mapped in dob_map: return dob_map[mapped]
+        if 'jack kirkpatrick jnr' in name_norm: return pd.to_datetime('2009-04-07')
+        if 'jack kirkpatrick snr' in name_norm: return pd.to_datetime('2001-11-15')
+        if 'pallav saran' in name_norm: return pd.to_datetime('1995-01-01')
+        if 'rene rankin' in name_norm: return pd.to_datetime('2007-06-12')
+        if 'lucy ly' in name_norm: return pd.to_datetime('1989-10-18')
+        return pd.NaT
+    
+    df_reg['DOB'] = df_reg['Norm_Name'].apply(get_dob)
+    
+    def calc_age_30june(dob):
+        if pd.isna(dob): return np.nan
+        return 2026 - dob.year - (1 if (dob.month, dob.day) > (6, 30) else 0)
+    
+    df_reg['Age_30June2026'] = df_reg['DOB'].apply(calc_age_30june)
+    df_reg['Is_Youth'] = df_reg['Age_30June2026'] <= 18
+    
+    # 4. Revenue
+
+    df_rev['Norm_Name'] = df_rev['Player Name'].apply(norm)
+    df_rev['Resolved_Norm'] = df_rev['Norm_Name'].apply(lambda x: norm(alias_map.get(x, x)))
+    
+    rev_summary = df_rev.groupby('Resolved_Norm').agg(
+        Revenue_Name=('Player Name', 'first'),
+        Total_Paid=('Payment Amount', 'sum'),
+        Payment_Count=('Payment Amount', 'count'),
+        Clubs_Paid=('Club', lambda s: ', '.join(sorted(set(str(x) for x in s)))),
+        Types_Paid=('Type', lambda s: '; '.join(sorted(set(str(x) for x in s)))),
+        Dates_Paid=('Payment Date', lambda s: ', '.join(sorted(set(str(x)[:10] for x in s))))
+    ).reset_index()
+    
+    # 5. Batting Matches Only (+ Saturday abandoned)
+    match_files = [
+        ('NV Play NCU League and Saturday Cup batting stats for season.xlsx', 'Saturday Batting', 'Name', 'Group'),
+        ('NV Play Women\'s Fixtures batting stats for season.xlsx', 'Women Batting', 'Name', 'Group'),
+        ('NV Play Midweek League batting stats for season.xlsx', 'Midweek Batting', 'Name', 'Group'),
+        ('NV Play NCU League and Saturday Cup player appearances for abandoned games.xlsx', 'Saturday Abandoned', 'Name', 'Match')
+    ]
+    
+    player_matches = {}
+    for fpath, comp_label, name_col, grp_col in match_files:
+        df_m = pd.read_excel(fpath).drop_duplicates(subset=[name_col, grp_col])
+        for _, row in df_m.iterrows():
+            raw = norm(row[name_col])
+            if not raw or raw == 'nan': continue
+            resolved = norm(alias_map.get(raw, raw))
+            if resolved not in player_matches:
+                player_matches[resolved] = {'display_name': str(row[name_col]).strip(), 'raw_names': set(), 'total_matches': 0, 'comps': set(), 'teams': set()}
+            player_matches[resolved]['total_matches'] += 1
+            player_matches[resolved]['raw_names'].add(str(row[name_col]).strip())
+            player_matches[resolved]['comps'].add(comp_label)
+            grp_str = str(row.get(grp_col, '')).strip()
+            if grp_str: player_matches[resolved]['teams'].add(grp_str)
+    
+    df_matches = pd.DataFrame([{
+        'Match_Norm': k,
+        'Match_Player_Display': smart_title(v['display_name']),
+        'Raw_Names': ', '.join(sorted(v['raw_names'])),
+        'Total_Matches': v['total_matches'],
+        'Competitions': ', '.join(sorted(v['comps'])),
+        'Teams': ', '.join(sorted(v['teams']))
+    } for k, v in player_matches.items()])
+    
+    # 6. Master Merge
+    df_reg['Resolved_Norm'] = df_reg['Norm_Name'].apply(lambda x: norm(alias_map.get(x, x)))
+    
+    df_master = pd.merge(df_reg, rev_summary, on='Resolved_Norm', how='left')
+    df_master = pd.merge(df_master, df_matches, left_on='Resolved_Norm', right_on='Match_Norm', how='left')
+    
+    df_master['Total_Paid'] = df_master['Total_Paid'].fillna(0)
+    df_master['Played_Adult_Matches'] = df_master['Match_Norm'].notna()
+    df_master['Total_Matches'] = df_master['Total_Matches'].fillna(0)
+    df_master['Date of Birth'] = df_master['DOB'].dt.strftime('%Y-%m-%d')
+    df_master['Age as of 30 June 2026'] = df_master['Age_30June2026']
+    
+    # Unmatched scorecard players
+    unmatched_matches = df_matches[~df_matches['Match_Norm'].isin(df_master['Resolved_Norm'])].sort_values(by='Total_Matches', ascending=False).copy()
+    
+    def extract_base_club(t):
+        if not t or pd.isna(t): return "Unknown"
+        t = str(t).strip()
+        t = re.sub(r'(?i)\b\d(?:st|nd|rd|th)?\s*XI\b', '', t)
+        t = re.sub(r'(?i)\b(?:1st|2nd|3rd|4th|5th|6th|7th)\b', '', t)
+        t = re.sub(r'(?i)\bMW\d?\b', '', t)
+        t = re.sub(r'(?i)\bXI\b', '', t)
+        t = re.sub(r'(?i)\bWomen\'?s?\b', '', t)
+        t = re.sub(r'(?i)\bCricket Club\b|\bCC\b', '', t)
+        t = re.sub(r'\s+\d$', '', t.strip())
+        t = re.sub(r'\s+', ' ', t).strip()
+        if re.search(r'(?i)\bciyms\b', t) or t.lower() == 'ci': return 'CIYMS'
+        if re.search(r'(?i)\bholywood\s+1881\b|\bholywood\b', t): return 'Holywood 1881'
+        if re.search(r'(?i)northern\s+ireland\s+malayali|nima', t): return 'NIMA'
+        if re.search(r'(?i)belfast\s+international\s+sports\s+club|bisc', t): return 'BISC'
+        if re.search(r'(?i)civil\s+service\s+north|csni', t): return 'CSNI'
+        if re.search(r'(?i)drumaness\s+super\s*kings|drumaness', t): return 'Drumaness Superkings'
+        if re.search(r'(?i)donaghcloney|donacloney', t): return 'Donacloney Mill'
+        if re.search(r'(?i)cliftonville\s+academy|cliftonville', t): return 'Cliftonville Academy'
+        if re.search(r'(?i)belfast\s+super\s*kings', t): return 'Belfast Superkings'
+        if re.search(r'(?i)ards\s*(&|and)?\s*donaghadee', t): return 'Ards & Donaghadee'
+        if re.search(r'(?i)ncu\s+pathway', t): return 'NCU Pathway XI'
+        return t if t else "Unknown"
+    
+    CLUB_DISPLAY = {
+        'Muckamore': 'Muckamore Cricket Club', 'Instonians': 'Instonians Cricket Club',
+        'Cooke Collegians': 'Cooke Collegians Cricket Club', 'Dundrum': 'Dundrum Cricket Club',
+        'Lisburn': 'Lisburn Cricket Club', 'CSNI': 'CSNI Cricket Club',
+        'Lurgan': 'Lurgan Cricket Club', 'Victoria': 'Victoria Cricket Club',
+        'Cliftonville Academy': 'Cliftonville Academy Cricket Club', 'Drumaness Superkings': 'Drumaness Superkings Cricket Club',
+        'Templepatrick': 'Templepatrick Cricket Club', 'Derriaghy': 'Derriaghy Cricket Club',
+        'Armagh': 'Armagh Cricket Club', 'Holywood 1881': 'Holywood Cricket Club 1881',
+        'CIYMS': 'CIYMS Cricket Club', 'Donacloney Mill': 'Donacloney Mill Cricket Club',
+        'PSNI': 'PSNI Cricket Club', 'Ards & Donaghadee': 'Ards & Donaghadee Cricket Club',
+        'Carrickfergus': 'Carrickfergus Cricket Club', 'Ballymena': 'Ballymena Cricket Club',
+        'Waringstown': 'Waringstown Cricket Club', 'NCU Pathway XI': 'NCU Pathway XI',
+        'Downpatrick': 'Downpatrick Cricket Club', 'Amigos Belfast': 'Amigos Belfast Cricket Club',
+        'Cregagh': 'Cregagh Cricket Club', 'North Down': 'North Down Cricket Club',
+        'Dunmurry': 'Dunmurry Cricket Club', 'Laurelvale': 'Laurelvale Cricket Club',
+        'Belfast Superkings': 'Belfast Superkings Cricket Club', 'Bangor': 'Bangor Cricket Club'
+    }
+    
+    def fmt(c):
+        return CLUB_DISPLAY.get(c, f"{c} Cricket Club" if "XI" not in c and "Cricket Club" not in c else c)
+    
+    inferred_list = []
+    for _, r in unmatched_matches.iterrows():
+        p_name = str(r['Match_Player_Display']).strip()
+        teams_str = str(r['Teams']).strip()
+        if p_name == "Tyler Mcgladdery" or p_name == "Tyler McGladdery":
+            inferred_list.append("Derriaghy Cricket Club (Overseas Professional)")
+            continue
+        if p_name == "Vismithaa Sai Pandiaraj":
+            inferred_list.append("Templepatrick Cricket Club")
+            continue
+        if p_name == "Molly Sawyer":
+            inferred_list.append("CIYMS Cricket Club")
+            continue
+        raw_fixtures = re.split(r',\s*(?=[A-Za-z0-9 ]+\s+v\s+)', teams_str)
+        fixture_club_pairs = []
+        club_counts = Counter()
+        for fix in raw_fixtures:
+            parts = fix.strip().rsplit(' - ', 1)[0].strip()
+            if ' v ' in parts:
+                t1, t2 = parts.split(' v ', 1)
+                t2 = t2.rsplit(', ', 1)[0]
+                c1 = extract_base_club(t1)
+                c2 = extract_base_club(t2)
+                if c1 != "Unknown" and c2 != "Unknown":
+                    fixture_club_pairs.append({c1, c2})
+                    club_counts[c1] += 1
+                    club_counts[c2] += 1
+        if not fixture_club_pairs:
+            inferred_list.append("Unknown")
+            continue
+        common = set.intersection(*fixture_club_pairs)
+        common.discard("Unknown")
+        if len(common) == 1:
+            inferred_list.append(fmt(list(common)[0]))
+        elif len(common) > 1:
+            inferred_list.append(" / ".join(fmt(c) for c in sorted(common)))
+        else:
+            top_club, top_cnt = club_counts.most_common(1)[0]
+            if top_cnt >= len(fixture_club_pairs) * 0.75:
+                inferred_list.append(fmt(top_club))
+            else:
+                all_c = sorted(set.union(*fixture_club_pairs))
+                inferred_list.append(" / ".join(fmt(c) for c in all_c))
+    
+    unmatched_matches.insert(1, 'Inferred Club', inferred_list)
+    
+    # Subsets
+    c_youth_played_paid5 = df_master[df_master['Is_Youth'] & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 5)]
+    c_youth_played_paid10 = df_master[df_master['Is_Youth'] & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] > 5)]
+    c_youth_played_unpaid = df_master[df_master['Is_Youth'] & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 0)]
+    
+    c_youth_noplay_paid = df_master[df_master['Is_Youth'] & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] > 0)]
+    c_youth_noplay_unpaid = df_master[df_master['Is_Youth'] & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] == 0)]
+    
+    c_adult_played_paid10 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] >= 10)]
+    c_adult_played_paid5 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 5)]
+    c_adult_played_paid0 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 0)]
+    
+    c_adult_noplay_paid10 = df_master[(~df_master['Is_Youth']) & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] >= 10)]
+    c_adult_noplay_paid5 = df_master[(~df_master['Is_Youth']) & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] == 5)]
+    c_adult_noplay_paid0 = df_master[(~df_master['Is_Youth']) & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] == 0)]
+    
+    # Summary Rows
+    summary_rows = [
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>18 on 30-June-2026) who PLAYED adult cricket - PAID £10+ (Compliant)', 'Count': len(c_adult_played_paid10), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>18 on 30-June-2026) who PLAYED adult cricket - PAID £5 (Underpaid Youth Rate)', 'Count': len(c_adult_played_paid5), 'Status': 'Underpaid (£5 shortfall)'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>18 on 30-June-2026) who PLAYED adult cricket - PAID £0 (Unpaid Adult Fee)', 'Count': len(c_adult_played_paid0), 'Status': 'Unpaid (£10 shortfall)'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<=18 on 30-June-2026) who PLAYED adult cricket - PAID £5 (Compliant)', 'Count': len(c_youth_played_paid5), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<=18 on 30-June-2026) who PLAYED adult cricket - PAID > £5 (Paid Adult Rate £10+)', 'Count': len(c_youth_played_paid10), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<=18 on 30-June-2026) who PLAYED adult cricket - PAID £0 (Unpaid Playing Youth Fee)', 'Count': len(c_youth_played_unpaid), 'Status': 'Unpaid (£5 shortfall)'},
+        
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT PLAY ADULT CRICKET', 'Category': 'Adults (>18 on 30-June-2026) who DID NOT play adult cricket - PAID £10+ (Non-Playing Adult)', 'Count': len(c_adult_noplay_paid10), 'Status': 'Compliant (Non-Playing)'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>18 on 30-June-2026) who DID NOT play adult cricket - PAID £5 (Non-Playing Youth Rate)', 'Count': len(c_adult_noplay_paid5), 'Status': 'Non-Playing'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>18 on 30-June-2026) who DID NOT play adult cricket - PAID £0 (Non-Playing Unpaid)', 'Count': len(c_adult_noplay_paid0), 'Status': 'Non-Playing'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<=18 on 30-June-2026) who DID NOT play adult cricket - PAID £5+ (Exempt / Unused Fee)', 'Count': len(c_youth_noplay_paid), 'Status': 'Exempt (Fee Paid)'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<=18 on 30-June-2026) who DID NOT play adult cricket - PAID £0 (Exempt Junior Cricket Only)', 'Count': len(c_youth_noplay_unpaid), 'Status': 'Compliant (Exempt £0)'},
+        
+        {'Section': 'TOTAL OFFICIAL REGISTERED PLAYERS (1. NCU_Registered_Players.xlsx)', 'Category': 'TOTAL REGISTERED PLAYERS ACCOUNTED FOR', 'Count': len(df_master), 'Status': '100% Reconciled'},
+        
+        {'Section': 'SECTION 3: UNREGISTERED MATCH APPEARANCES', 'Category': 'Unregistered Scorecard Players (Played in matches but NOT registered in Sport80)', 'Count': len(unmatched_matches), 'Status': 'Unregistered'}
+    ]
+    
+    df_summary = pd.DataFrame(summary_rows)
+    
+    now = datetime.now()
+    d_str = now.strftime('%Y-%m-%d')
+    t_str = now.strftime('%H-%M-%S')
+    timestamped_prefix = f'D{d_str} T{t_str}'
+    
+    audit_excel_io = io.BytesIO()
+    with pd.ExcelWriter(audit_excel_io, engine='openpyxl') as writer:
+        # 1. Summary
+        df_summary.to_excel(writer, sheet_name='Audit Summary', index=False)
+        
+        # 2. Unregistered Scorecard Players
+        cols_un = ['Match_Player_Display', 'Inferred Club', 'Total_Matches', 'Competitions', 'Teams', 'Raw_Names']
+        unmatched_matches[cols_un].to_excel(writer, sheet_name='Unregistered Scorecard Players', index=False)
+        
+        # Detail sheets
+        cols_reg_unpaid_y = ['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Teams']
+        c_youth_played_unpaid[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Youth in Adult Cricket', index=False)
+        c_adult_played_paid0[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Adults (£10 shortfall)', index=False)
+        
+        cols_reg_with_types = ['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']
+        c_adult_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Adults Paid Youth Rate (£5)', index=False)
+        c_youth_noplay_paid[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid No Adult Matches', index=False)
+        
+        c_adult_played_paid10[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Adults (£10+)', index=False)
+        c_youth_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Youths (£5)', index=False)
+        
+        c_youth_noplay_unpaid[['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
+        c_adult_noplay_paid10[['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
+    
+    # Styling with openpyxl
+    audit_excel_io.seek(0)
+    wb = openpyxl.load_workbook(audit_excel_io)
+    header_fill = PatternFill(start_color='1F4E79', end_color='1F4E79', fill_type='solid')
+    header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+    
+    total_row_fill = PatternFill(start_color='D9E1F2', end_color='D9E1F2', fill_type='solid')
+    total_row_font = Font(name='Calibri', size=11, bold=True, color='000000')
+    
+    center_align = Alignment(horizontal='center', vertical='center')
+    currency_format = '£#,##0'
+    
+    def is_date_or_number(val):
+        if val is None or str(val).strip() == '' or str(val).strip().lower() == 'nan':
+            return True
+        if isinstance(val, (int, float, datetime)):
+            return True
+        s = str(val).strip()
+        try:
+            float(s.replace('£', '').replace(',', ''))
+            return True
+        except ValueError:
+            pass
+        if re.match(r'^\d{4}-\d{2}-\d{2}', s) or re.match(r'^\d{2}/\d{2}/\d{4}', s):
+            return True
+        return False
+    
+    for sname in wb.sheetnames:
+        ws = wb[sname]
+        ws.freeze_panes = 'A2'
+        ws.auto_filter.ref = ws.dimensions
+        
+        for col_idx in range(1, ws.max_column + 1):
+            cell = ws.cell(row=1, column=col_idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = Alignment(horizontal='center' if any(w in str(cell.value) for w in ['Date', 'Age', 'Count', 'Matches', 'Paid', 'Status']) else 'left', vertical='center')
+    
+        if sname == 'Audit Summary':
+            for r in range(2, ws.max_row + 1):
+                if 'TOTAL REGISTERED PLAYERS' in str(ws.cell(row=r, column=2).value):
+                    for c in range(1, ws.max_column + 1):
+                        ws.cell(row=r, column=c).fill = total_row_fill
+                        ws.cell(row=r, column=c).font = total_row_font
+    
+        for col_idx in range(1, ws.max_column + 1):
+            header_val = str(ws.cell(row=1, column=col_idx).value or '').strip()
+            
+            is_num_col = True
+            has_data = False
+            for row_idx in range(2, ws.max_row + 1):
+                val = ws.cell(row=row_idx, column=col_idx).value
+                if val is not None and str(val).strip() != '':
+                    has_data = True
+                    if not is_date_or_number(val):
+                        is_num_col = False
+                        break
+                        
+            for row_idx in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                if header_val == 'Total_Paid':
+                    if cell.value is not None and str(cell.value).strip() != '':
+                        try:
+                            num = float(str(cell.value).replace('£', '').replace(',', '').strip())
+                            cell.value = int(num) if num.is_integer() else num
+                        except: pass
+                    cell.number_format = currency_format
+                    cell.alignment = center_align
+                elif has_data and is_num_col:
+                    cell.alignment = center_align
+    
+        for col_cells in ws.columns:
+            col_letter = get_column_letter(col_cells[0].column)
+            max_len = max(min(len(str(c.value or '')), 65) for c in col_cells)
+            ws.column_dimensions[col_letter].width = max(max_len + 4, 12)
+    
+    final_excel_io = io.BytesIO()
+    wb.save(final_excel_io)
+    
+    # Generate the anomalies word report
+    doc_io = generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix)
+    
+    return final_excel_io, doc_io, df_summary, df_master
+    

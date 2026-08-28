@@ -1,5 +1,5 @@
 # ==========================================
-# secretary_app.py (NCU Secretary Portal)
+# app.py
 # ==========================================
 import streamlit as st
 import pandas as pd
@@ -23,25 +23,6 @@ except ImportError:
     
 import warnings
 warnings.filterwarnings('ignore')
-
-# ==========================================
-# 🎛️ MODULE VISIBILITY SWITCHES (ON / OFF)
-# ==========================================
-# Set any of these to True to show, or False to hide the module from secretaries:
-ENABLE_PLAYER_WORD_DOC        = True
-ENABLE_REGISTRATION_CHECKS    = True
-ENABLE_MIDWEEK_CHECKS         = False
-ENABLE_STARRING_REPORTS       = True
-ENABLE_CLUB_CONTACTS          = True
-
-# ==========================================
-# UI CUSTOMIZATION SETTINGS
-# ==========================================
-# Change these values to adjust text sizes in the Contacts Directory. 
-# You can use standard CSS sizes like "18px", "24px", "1.2rem", etc.
-UI_CLUB_HEADER_SIZE = "22px"
-UI_ROLE_TITLE_SIZE = "18px"
-UI_OFFICIAL_NAME_SIZE = "16px"
 
 # ==========================================
 # STREAMLIT CACHED EXCEL LOADERS
@@ -90,6 +71,7 @@ def format_mail_link(email_str):
 # USER CONFIGURATIONS & PERSISTENCE
 # ==========================================
 MAIN_HEADER_SIZE = "28px" 
+CONFIG_FILE = "threshold_settings.json"
 
 PAGE_TITLES = {
     "player_doc": "📄 Player Word Doc Generator",
@@ -98,6 +80,59 @@ PAGE_TITLES = {
     "starring_reports": "🚨 Club Starring & Inactivity Exporter",
     "club_contacts": "📇 Club Contacts & Officials Directory"
 }
+
+DEFAULT_THRESHOLDS = {
+    "t1_runs": 200, "t1_bmat": 5, "t1_wick": 15, "t1_mmat": 5,
+    "t2_runs": 150, "t2_bmat": 5, "t2_wick": 10, "t2_mmat": 5,
+    "t3_runs": 100, "t3_bmat": 3, "t3_wick": 5,  "t3_mmat": 3,
+    "t4_runs": 50,  "t4_bmat": 3, "t4_wick": 3,  "t4_mmat": 3,
+    "w1_runs": 100, "w1_bmat": 5, "w1_wick": 10, "w1_mmat": 5,
+    "w2_runs": 25,  "w2_bmat": 2, "w2_wick": 2,  "w2_mmat": 2,
+    "mw_min_runs": 50, "mw_min_innings": 0, "mw_min_wickets": 5
+}
+
+def init_threshold_store():
+    if "threshold_store" not in st.session_state:
+        store = dict(DEFAULT_THRESHOLDS)
+        if os.path.exists(CONFIG_FILE):
+            try:
+                with open(CONFIG_FILE, "r") as f:
+                    saved = json.load(f)
+                    for k, v in saved.items():
+                        if k in DEFAULT_THRESHOLDS:
+                            store[k] = int(v)
+            except Exception:
+                pass
+        st.session_state["threshold_store"] = store
+
+def get_threshold_val(key):
+    init_threshold_store()
+    is_zero = st.session_state.get("disable_thresholds", False)
+    if is_zero: return 0
+    if key in st.session_state: st.session_state["threshold_store"][key] = st.session_state[key]
+    return st.session_state["threshold_store"].get(key, DEFAULT_THRESHOLDS.get(key, 0))
+
+def save_threshold_settings():
+    init_threshold_store()
+    if not st.session_state.get("disable_thresholds", False):
+        for k in DEFAULT_THRESHOLDS:
+            if k in st.session_state: st.session_state["threshold_store"][k] = st.session_state[k]
+    with open(CONFIG_FILE, "w") as f:
+        json.dump(st.session_state["threshold_store"], f, indent=4)
+
+def reset_threshold_settings():
+    st.session_state["threshold_store"] = dict(DEFAULT_THRESHOLDS)
+    for k, v in DEFAULT_THRESHOLDS.items(): st.session_state[k] = v
+    if os.path.exists(CONFIG_FILE):
+        try: os.remove(CONFIG_FILE)
+        except Exception: pass
+
+def toggle_zero_thresholds():
+    init_threshold_store()
+    is_zero = st.session_state.get("disable_thresholds", False)
+    store = st.session_state["threshold_store"]
+    for k in DEFAULT_THRESHOLDS:
+        st.session_state[k] = 0 if is_zero else store.get(k, DEFAULT_THRESHOLDS[k])
 
 # ==========================================
 # PAGE CONFIGURATION & STYLING
@@ -116,36 +151,24 @@ st.markdown(f"""
 </style>
 """, unsafe_allow_html=True)
 
-# Build enabled module list dynamically
-available_modules = []
-if ENABLE_PLAYER_WORD_DOC:
-    available_modules.append("Player Word Doc Generator")
-if ENABLE_REGISTRATION_CHECKS:
-    available_modules.append("Registration Checks")
-if ENABLE_MIDWEEK_CHECKS:
-    available_modules.append("Midweek Registration & Starring Check")
-if ENABLE_STARRING_REPORTS:
-    available_modules.append("Starring & Inactivity Reports")
-if ENABLE_CLUB_CONTACTS:
-    available_modules.append("Club Contacts Directory")
-
 # ==========================================
 # SIDEBAR NAVIGATION
 # ==========================================
 with st.sidebar:
-    st.title("🏏 NCU Secretary Hub")
+    st.title("🏏 NCU Cricket Hub")
     st.header("🛠️ Navigation")
     
-    if not available_modules:
-        st.warning("⚠️ No modules are currently active.")
-        app_mode = None
-    else:
-        app_mode = st.radio("Choose a module to run:", available_modules)
+    app_mode = st.radio(
+        "Choose a module to run:",
+        [
+            "Player Word Doc Generator", 
+            "Registration Checks",
+            "Midweek Registration & Starring Check",
+            "Starring & Inactivity Reports",
+            "Club Contacts Directory",
+        ]
+    )
     st.divider()
-
-if not app_mode:
-    st.info("👋 Welcome to the NCU Secretary Portal. Please contact your union administrator for module access.")
-    st.stop()
 
 # ==========================================
 # TOOL 1: WORD DOC GENERATOR
@@ -222,24 +245,16 @@ if app_mode == "Player Word Doc Generator":
                             if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                         alias_map = eng.build_alias_map(aliases, domain)
-                        f_unreg = eng.DEFAULT_FILES.get(domain, {}).get("unreg", "")
-                        unreg_df = get_excel_df(f_unreg) if os.path.exists(f_unreg) else None
-                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
-                        player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
+                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
                         
                         def resolve_duplicates(row, name_col):
                             name = str(row[name_col])
                             row_team = str(row.get('Team', '')).lower()
                             match_grp = str(row.get('Group', row.get('Match', ''))).lower()
-                            combined_context = row_team + ' ' + match_grp
                             if domain == "Men's" and name in eng.KNOWN_DUPLICATES:
                                 for club in eng.KNOWN_DUPLICATES[name]:
-                                    # Check all known aliases/abbreviations for this club
-                                    # Use word-boundary regex to avoid 'CI' matching inside 'City' or 'CSNI'
-                                    variants = eng.CLUB_ALIASES.get(club, [club])
-                                    for variant in variants:
-                                        if re.search(r'\b' + re.escape(variant.lower()) + r'\b', combined_context):
-                                            return f"{name} ({club})"
+                                    if club.lower() in row_team or club.lower() in match_grp:
+                                        return f"{name} ({club})"
                             return name
                         
                         batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
@@ -269,20 +284,9 @@ if app_mode == "Player Word Doc Generator":
                                 if clean_q in str(row.iloc[0]).lower() or clean_q in str(row.iloc[1]).lower():
                                     target_official_names.add(str(row.iloc[1]).strip())
 
-                        if '_computed_name' in reg_players.columns:
-                            reg_matches = reg_players[reg_players['_computed_name'].astype(str).str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(reg_matches['_computed_name'].dropna().astype(str).str.strip().tolist())
-                        elif 'Full Name' in reg_players.columns:
+                        if 'Full Name' in reg_players.columns:
                             reg_matches = reg_players[reg_players['Full Name'].astype(str).str.contains(clean_q, case=False, na=False)]
                             target_official_names.update(reg_matches['Full Name'].dropna().astype(str).str.strip().tolist())
-                        elif 'First Name' in reg_players.columns and 'Last Name' in reg_players.columns:
-                            comp = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Last Name'].astype(str).str.strip()
-                            reg_matches = reg_players[comp.str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(comp[reg_matches.index].dropna().astype(str).str.strip().tolist())
-                        elif 'First Name' in reg_players.columns and 'Surname' in reg_players.columns:
-                            comp = reg_players['First Name'].astype(str).str.strip() + ' ' + reg_players['Surname'].astype(str).str.strip()
-                            reg_matches = reg_players[comp.str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(comp[reg_matches.index].dropna().astype(str).str.strip().tolist())
 
                         bat_direct = batting[batting['Name'].astype(str).str.contains(clean_q, case=False, na=False)]['Name'].unique().tolist()
                         bowl_direct = bowling[bowling['Bowler'].astype(str).str.contains(clean_q, case=False, na=False)]['Bowler'].unique().tolist()
@@ -344,26 +348,9 @@ if app_mode == "Player Word Doc Generator":
                     def format_player_display(name):
                         pure = name.split(' (')[0].strip()
                         club_clean = get_club_for_player(name)
-                        
-                        # Check for transfer date
-                        transfer_suffix = ""
-                        try:
-                            df_reg = st.session_state.reg_players
-                            name_col = '_computed_name' if '_computed_name' in df_reg.columns else ('Full Name' if 'Full Name' in df_reg.columns else df_reg.columns[0])
-                            reg_match = df_reg[df_reg[name_col].astype(str).str.strip().str.lower() == pure.lower()]
-                            if not reg_match.empty and 'Transfer Date' in reg_match.columns:
-                                t_date = reg_match.iloc[0]['Transfer Date']
-                                if pd.notna(t_date):
-                                    day = t_date.day
-                                    suffix = 'th' if 11 <= day <= 13 else {1: 'st', 2: 'nd', 3: 'rd'}.get(day % 10, 'th')
-                                    formatted_date = f"{day}{suffix} {t_date.strftime('%B %Y')}"
-                                    transfer_suffix = f" (transferred {formatted_date})"
-                        except:
-                            pass
-
                         p_aliases = eng.get_player_aliases(pure, aliases_df)
-                        if p_aliases: return f"{' / '.join(p_aliases)} ({club_clean}){transfer_suffix}"
-                        return f"{pure} ({club_clean}){transfer_suffix}"
+                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean})"
+                        return f"{pure} ({club_clean})"
 
                     if len(unique_players) == 1:
                         active_player = unique_players[0]
@@ -488,18 +475,24 @@ elif app_mode == "Registration Checks":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Audit Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-                        with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+#                         with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        pass
+#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        pass
+#                         with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+                        pass
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+#                                 with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+                                pass
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+                                pass
                             if star_count > 0:
-                                with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+#                                 with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+                                pass
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -509,7 +502,7 @@ elif app_mode == "Registration Checks":
                             zip_file.writestr(f"{prefix}_Audit_Database_{date_str}.xlsx", excel_io.getvalue())
                             zip_file.writestr(f"{prefix}_Audit_Report_{date_str}.docx", doc_io.getvalue())
                                 
-                        st.download_button("📦 Download Audit Results (ZIP)", data=zip_buffer.getvalue(), file_name=f"{prefix}_Registration_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
+                        st.download_button("📦 Download Audit Results (ZIP)", data=zip_buffer.getvalue(), file_name=f"{domain.replace('''s''', '')}_Registration_Audit_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
                     except Exception as e:
                         st.error(f"An error occurred during processing: {str(e)}")
 
@@ -570,18 +563,24 @@ elif app_mode == "Midweek Registration & Starring Check":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Midweek Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-                        with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+#                         with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        pass
+#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        pass
+#                         with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
+                        pass
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+#                                 with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
+                                pass
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
+                                pass
                             if star_count > 0:
-                                with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+#                                 with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
+                                pass
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -650,12 +649,13 @@ elif app_mode == "Starring & Inactivity Reports":
                     st.success("✅ Reports generated successfully!")
                     st.subheader("📊 Exporter Output Summary")
                     col_star1, col_star2 = st.columns(2)
-                    with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
-                    with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
+#                     with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
+                    pass
+#                     with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
+                    pass
                     
                     st.divider()
-                    prefix = domain.replace("'", "")
-                    st.download_button("📥 Download Club Reports (ZIP)", data=zip_buffer.getvalue(), file_name=f"{prefix}_Starring_Reports_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
+                    st.download_button("📥 Download Club Reports (ZIP)", data=zip_buffer.getvalue(), file_name=f"{domain.replace('''s''', '')}_Starring_Reports_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
                 except Exception as e:
                     st.error(f"An error occurred during processing: {str(e)}")
 
@@ -728,7 +728,7 @@ elif app_mode == "Club Contacts Directory":
                     filtered_view = club_matches
 
                 st.divider()
-                st.markdown(f"<div style='font-size: {UI_CLUB_HEADER_SIZE}; font-weight: bold; padding-top: 1rem; padding-bottom: 1rem;'>📌 {selected_club} — {selected_tier}</div>", unsafe_allow_html=True)
+                st.subheader(f"📌 {selected_club} — {selected_tier}")
 
                 if filtered_view.empty:
                     st.info(f"No contact records found for {selected_club} under {selected_tier}.")
@@ -743,8 +743,8 @@ elif app_mode == "Club Contacts Directory":
                                 phone_val = row.get('Phone', '')
                                 email_val = row.get('Email', '')
 
-                                st.markdown(f"<div style='font-size: {UI_ROLE_TITLE_SIZE}; font-weight: bold; margin-bottom: 0.25rem;'>{role_title}</div>", unsafe_allow_html=True)
-                                st.markdown(f"<div style='font-size: {UI_OFFICIAL_NAME_SIZE}; margin-bottom: 0.25rem;'>👤 <b>{official_name}</b></div>", unsafe_allow_html=True)
+                                st.markdown(f"### {role_title}")
+                                st.markdown(f"**👤 {official_name}**")
                                 st.markdown(f"**Category:** `{row.get('Team Tier', 'General')}`")
                                 st.markdown(format_tel_link(phone_val), unsafe_allow_html=True)
                                 st.markdown(format_mail_link(email_val), unsafe_allow_html=True)
@@ -773,7 +773,7 @@ elif app_mode == "Club Contacts Directory":
                     
                     display_table = role_df[['Club', 'Name', 'Direct Phone', 'Direct Email', 'Team Tier']].sort_values(by='Club')
                     st.markdown(
-                        display_table.to_html(escape=False, index=False, justify='left'), 
+                        display_table.to_html(escape=False, index=False), 
                         unsafe_allow_html=True
                     )
 
@@ -803,6 +803,6 @@ elif app_mode == "Club Contacts Directory":
                     matched_rows['Direct Email'] = matched_rows['Email'].apply(format_mail_link)
                     
                     st.markdown(
-                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False, justify='left'),
+                        matched_rows[['Club', 'Role', 'Team Tier', 'Name', 'Direct Phone', 'Direct Email']].to_html(escape=False, index=False),
                         unsafe_allow_html=True
                     )
