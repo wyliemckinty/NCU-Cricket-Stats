@@ -199,6 +199,8 @@ if app_mode == "Player Word Doc Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
+                f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"doc_league_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"doc_cup_{domain}")
         
         include_irish = False
         if domain == "Men's":
@@ -230,7 +232,7 @@ if app_mode == "Player Word Doc Generator":
 
         if st.session_state.player_search_active:
             current_query = st.session_state.player_search_query
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
             if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
                 
             missing_files = [f for f in files_to_check if not os.path.exists(f)]
@@ -320,7 +322,8 @@ if app_mode == "Player Word Doc Generator":
                         
                         def player_sort_key(name):
                             pure_name = name.split(' (')[0].strip()
-                            club = player_club_map.get(name.lower(), "Unknown Club").lower()
+                            mapped = alias_map.get(name.lower(), name.lower())
+                            club = player_club_map.get(mapped.lower(), "Unknown Club").lower()
                             parts = pure_name.split()
                             surname = parts[-1].lower() if len(parts) > 1 else (parts[0].lower() if parts else "")
                             firstnames = " ".join(parts[:-1]).lower() if len(parts) > 1 else ""
@@ -347,7 +350,9 @@ if app_mode == "Player Word Doc Generator":
                 else:
                     def get_club_for_player(name):
                         if '(' in name and ')' in name: return name.split('(')[-1].replace(')', '').strip()
-                        club = st.session_state.player_club_map.get(name.lower(), None)
+                        a_map = eng.build_alias_map(aliases_df, domain)
+                        mapped = a_map.get(name.lower(), name.lower())
+                        club = st.session_state.player_club_map.get(mapped.lower(), None)
                         if club and str(club).lower() not in ['nan', 'none', '', 'unknown club']:
                             return str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
                         return "Unknown Club"
@@ -369,7 +374,14 @@ if app_mode == "Player Word Doc Generator":
                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                         
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                        league_df = get_excel_df(f_league)
+                        cup_df = get_excel_df(f_cup)
+                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                            league_dict = dict(zip(league_df['Team'], league_df['League']))
+                        else:
+                            league_dict = None
+
+                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                         st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
@@ -385,7 +397,14 @@ if app_mode == "Player Word Doc Generator":
                                 p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                 p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
                                 
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                league_df = get_excel_df(f_league)
+                                cup_df = get_excel_df(f_cup)
+                                if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                                    league_dict = dict(zip(league_df['Team'], league_df['League']))
+                                else:
+                                    league_dict = None
+
+                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                                 st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
                             else:
                                 zip_buffer = io.BytesIO()
@@ -396,7 +415,14 @@ if app_mode == "Player Word Doc Generator":
                                         p_bat = matched_batting[matched_batting['Name'] == active_player]
                                         p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
                                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                        league_df = get_excel_df(f_league)
+                                        cup_df = get_excel_df(f_cup)
+                                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                                            league_dict = dict(zip(league_df['Team'], league_df['League']))
+                                        else:
+                                            league_dict = None
+
+                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df)
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
@@ -723,7 +749,7 @@ elif app_mode == "Club Fines Generator":
         st.divider()
         if st.button("📄 Run Engine & Generate Fines Report", type="primary"):
             forfeit_path = f_forfeit if f_forfeit is not None else (default_forfeit_path if use_default_forfeit and os.path.exists(default_forfeit_path) else None)
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
             if f_abandoned: files_to_check.append(f_abandoned)
             if domain != "Midweek":
                 files_to_check.extend([f_starring, f_league])
@@ -804,7 +830,7 @@ elif app_mode == "Unregistered Player Fines Generator":
         
         st.divider()
         if st.button("📄 Run Engine & Generate Unregistered Report", type="primary"):
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
             if f_abandoned: files_to_check.append(f_abandoned)
             if domain != "Midweek":
                 files_to_check.extend([f_starring, f_league])

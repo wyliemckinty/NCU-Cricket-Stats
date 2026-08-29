@@ -934,8 +934,7 @@ def doc_format_cricket_names(text, domain):
 
 def doc_get_player_team_from_match(match_str, base_club):
     if pd.isna(match_str) or ' v ' not in str(match_str): return "Unknown Team"
-    parts = str(match_str).split(' v ')
-    team1, team2 = parts[0].strip(), parts[1].split(',')[0].strip()
+    team1, team2 = extract_teams_from_group(match_str)
     
     def clean_for_matching(s):
         s = str(s).lower()
@@ -4119,7 +4118,19 @@ def clean_revenue_report(source_file):
             'Northern Ireland Malayali Association CC': 'NIMA Cricket Club',
         }
         club = club_mapping.get(club, club)
-        
+
+        # SPECIFIC FIX FOR MAGEE AND MCILWAINE
+        if player_name.lower() == 'james magee' and 'instonians' in club.lower():
+            if 'youth' in m_type.lower() or 'youth' in s.lower():
+                player_name = 'James Magee jnr'
+            else:
+                player_name = 'James Magee snr'
+        elif player_name.lower() == 'peter mcilwaine' and 'bangor' in club.lower():
+            if 'youth' in m_type.lower() or 'youth' in s.lower():
+                player_name = 'Teddy Mcilwaine'
+            else:
+                player_name = 'Peter Mcilwaine' 
+
         return {
             'Player Name': player_name,
             'Club': club,
@@ -4393,22 +4404,33 @@ def run_registration_fee_audit():
     df_dob['Norm_Name'] = df_dob['Full_Name'].apply(norm)
     df_dob['DOB'] = pd.to_datetime(df_dob['Date of Birth'], errors='coerce')
     
-    dob_map = {}
+    dob_map_strict = {}
+    dob_map_loose = {}
     for _, r in df_dob.iterrows():
-        dob_map[r['Norm_Name']] = r['DOB']
-    
-    def get_dob(name_norm):
-        if name_norm in dob_map: return dob_map[name_norm]
-        mapped = norm(alias_map.get(name_norm, name_norm))
-        if mapped in dob_map: return dob_map[mapped]
-        if 'jack kirkpatrick jnr' in name_norm: return pd.to_datetime('2009-04-07')
-        if 'jack kirkpatrick snr' in name_norm: return pd.to_datetime('2001-11-15')
-        if 'pallav saran' in name_norm: return pd.to_datetime('1995-01-01')
-        if 'rene rankin' in name_norm: return pd.to_datetime('2007-06-12')
-        if 'lucy ly' in name_norm: return pd.to_datetime('1989-10-18')
+        nn = r['Norm_Name']
+        c = str(r['Individual Membership Primary Club']).strip().lower().replace(' cricket club', '').replace(' cc', '')
+        dob_map_strict[(nn, c)] = r['DOB']
+        dob_map_loose[nn] = r['DOB']
+
+    def get_dob(row):
+        nn = row['Norm_Name']
+        c = str(row['Individual Membership Primary Club']).strip().lower().replace(' cricket club', '').replace(' cc', '')
+        if (nn, c) in dob_map_strict: return dob_map_strict[(nn, c)]
+        
+        mapped = norm(alias_map.get(nn, nn))
+        if (mapped, c) in dob_map_strict: return dob_map_strict[(mapped, c)]
+        
+        if nn in dob_map_loose: return dob_map_loose[nn]
+        if mapped in dob_map_loose: return dob_map_loose[mapped]
+        
+        if 'jack kirkpatrick jnr' in nn: return pd.to_datetime('2009-04-07')
+        if 'jack kirkpatrick snr' in nn: return pd.to_datetime('2001-11-15')
+        if 'pallav saran' in nn: return pd.to_datetime('1995-01-01')
+        if 'rene rankin' in nn: return pd.to_datetime('2007-06-12')
+        if 'lucy ly' in nn: return pd.to_datetime('1989-10-18')
         return pd.NaT
     
-    df_reg['DOB'] = df_reg['Norm_Name'].apply(get_dob)
+    df_reg['DOB'] = df_reg.apply(get_dob, axis=1)
     
     def calc_age_30june(dob):
         if pd.isna(dob): return np.nan
@@ -4421,13 +4443,14 @@ def run_registration_fee_audit():
 
     df_rev['Norm_Name'] = df_rev['Player Name'].apply(norm)
     df_rev['Resolved_Norm'] = df_rev['Norm_Name'].apply(lambda x: norm(alias_map.get(x, x)))
+    df_rev['Payment_Details'] = df_rev['Club'].fillna('').astype(str) + ' - ' + df_rev['Type'].fillna('').astype(str) + ' (£' + df_rev['Payment Amount'].astype(str) + ')'
     
     rev_summary = df_rev.groupby('Resolved_Norm').agg(
         Revenue_Name=('Player Name', 'first'),
         Total_Paid=('Payment Amount', 'sum'),
         Payment_Count=('Payment Amount', 'count'),
         Clubs_Paid=('Club', lambda s: ', '.join(sorted(set(str(x) for x in s)))),
-        Types_Paid=('Type', lambda s: '; '.join(sorted(set(str(x) for x in s)))),
+        Types_Paid=('Payment_Details', lambda s: '; '.join(sorted(set(str(x) for x in s)))),
         Dates_Paid=('Payment Date', lambda s: ', '.join(sorted(set(str(x)[:10] for x in s))))
     ).reset_index()
     
@@ -4465,13 +4488,110 @@ def run_registration_fee_audit():
     
     # 6. Master Merge
     df_reg['Resolved_Norm'] = df_reg['Norm_Name'].apply(lambda x: norm(alias_map.get(x, x)))
+
+
     
     df_master = pd.merge(df_reg, rev_summary, on='Resolved_Norm', how='left')
+
+    # --- CUSTOM FEE AUDIT WORKAROUND FOR DUPLICATE NAMES ---
+    # For players who share a name, the merge above accidentally sums their payments together.
+    # We will specifically override their totals by allocating payments to the row where the clubs match!
+    try:
+        name_counts = df_reg['Resolved_Norm'].value_counts()
+        multi_names = name_counts[name_counts > 1].index.tolist()
+        
+        for name in multi_names:
+            payments = df_rev[df_rev['Resolved_Norm'] == name]
+            mask = df_master['Resolved_Norm'] == name
+            
+            # Reset their totals since they were wrongly combined
+            df_master.loc[mask, 'Total_Paid'] = 0
+            df_master.loc[mask, 'Types_Paid'] = ''
+            
+            for idx, row in df_master[mask].iterrows():
+                reg_clubs = [str(row.get('Individual Membership Primary Club', '')).lower().replace(' cricket club', '').replace(' cc', '').strip()]
+                for tc in ['Transfer Club 1', 'Transfer Club 2']:
+                    if tc in row and pd.notna(row[tc]):
+                        reg_clubs.append(str(row[tc]).lower().replace(' cricket club', '').replace(' cc', '').strip())
+                
+                matched_payments = []
+                for _, p in payments.iterrows():
+                    p_club = str(p.get('Club', '')).lower().replace(' cricket club', '').replace(' cc', '').strip()
+                    if p_club:
+                        if any((p_club in rc or rc in p_club) for rc in reg_clubs if rc):
+                            matched_payments.append(p)
+                
+                if matched_payments:
+                    total = sum(p['Payment Amount'] for p in matched_payments)
+                    types = '; '.join(sorted(set(str(p.get('Payment_Details', p.get('Type', ''))) for p in matched_payments)))
+                    df_master.at[idx, 'Total_Paid'] = total
+                    df_master.at[idx, 'Types_Paid'] = types
+    except Exception as e:
+        with open('error_fee.txt', 'w') as f2: f2.write(str(e))
+    # ---------------------------------------------------------
     df_master = pd.merge(df_master, df_matches, left_on='Resolved_Norm', right_on='Match_Norm', how='left')
     
     df_master['Total_Paid'] = df_master['Total_Paid'].fillna(0)
-    df_master['Played_Adult_Matches'] = df_master['Match_Norm'].notna()
+
+
     df_master['Total_Matches'] = df_master['Total_Matches'].fillna(0)
+
+    # --- CUSTOM MATCH WORKAROUND FOR DUPLICATE NAMES ---
+    try:
+        for name in multi_names:
+            mask = df_master['Resolved_Norm'] == name
+            
+            # Reset their totals and teams
+            df_master.loc[mask, 'Total_Matches'] = 0
+            df_master.loc[mask, 'Teams'] = ''
+            
+            if name in player_matches:
+                teams = player_matches[name]['teams']
+                uncontested = []
+                contested = []
+                
+                # Identify contested vs uncontested
+                for t in teams:
+                    t_lower = t.lower()
+                    matching_idxs = []
+                    
+                    # Check primary clubs
+                    for idx, row in df_master[mask].iterrows():
+                        rc = str(row.get('Individual Membership Primary Club', '')).lower().replace(' cricket club', '').replace(' cc', '').strip()
+                        if rc and rc in t_lower:
+                            matching_idxs.append(idx)
+                            continue
+                            
+                        # Check transfer clubs if primary didn't match
+                        for tc_col in ['Transfer Club 1', 'Transfer Club 2']:
+                            if tc_col in row and pd.notna(row[tc_col]):
+                                tc = str(row[tc_col]).lower().replace(' cricket club', '').replace(' cc', '').strip()
+                                if tc and tc in t_lower:
+                                    matching_idxs.append(idx)
+                                    break
+                                    
+                    if len(matching_idxs) == 1:
+                        uncontested.append((t, matching_idxs[0]))
+                    elif len(matching_idxs) > 1:
+                        contested.append((t, matching_idxs))
+                        
+                # Assign uncontested matches
+                for t, idx in uncontested:
+                    df_master.at[idx, 'Total_Matches'] += 1
+                    df_master.at[idx, 'Teams'] = df_master.at[idx, 'Teams'] + t + ', ' if df_master.at[idx, 'Teams'] else t + ', '
+                    
+                # Assign contested matches to the player with the most uncontested matches
+                for t, idxs in contested:
+                    best_idx = max(idxs, key=lambda i: df_master.at[i, 'Total_Matches'])
+                    df_master.at[best_idx, 'Total_Matches'] += 1
+                    df_master.at[best_idx, 'Teams'] = df_master.at[best_idx, 'Teams'] + t + ', ' if df_master.at[best_idx, 'Teams'] else t + ', '
+                    
+        # Clean up trailing commas
+        df_master['Teams'] = df_master['Teams'].astype(str).str.rstrip(', ')
+        
+    except Exception as e:
+        with open('error_match_fix.txt', 'w') as f2: f2.write(str(e))
+    df_master['Played_Adult_Matches'] = df_master['Total_Matches'] > 0
     df_master['Date of Birth'] = df_master['DOB'].dt.strftime('%Y-%m-%d')
     df_master['Age as of 30 June 2026'] = df_master['Age_30June2026']
     
@@ -4578,6 +4698,7 @@ def run_registration_fee_audit():
     c_youth_noplay_unpaid = df_master[df_master['Is_Youth'] & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] == 0)]
     
     c_adult_played_paid10 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] >= 10)]
+    print('Adam Gardner count in df_master:', len(df_master[df_master['Norm_Name'] == 'adamgardner']))
     c_adult_played_paid5 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 5)]
     c_adult_played_paid0 = df_master[(~df_master['Is_Youth']) & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 0)]
     
@@ -4629,6 +4750,7 @@ def run_registration_fee_audit():
         cols_reg_with_types = ['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']
         c_adult_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Adults Paid Youth Rate (£5)', index=False)
         c_youth_noplay_paid[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid No Adult Matches', index=False)
+        
         
         c_adult_played_paid10[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Adults (£10+)', index=False)
         c_youth_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Youths (£5)', index=False)
