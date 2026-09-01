@@ -1049,6 +1049,42 @@ def get_player_aliases(official_name, aliases):
                     
     return found_aliases
 
+def infer_player_club(active_player, player_batting, player_bowling, domain):
+    if ' (' in active_player: return active_player.split(' (')[1].replace(')', '')
+    groups_to_concat = []
+    if player_batting is not None and not player_batting.empty and 'Group' in player_batting.columns:
+        groups_to_concat.append(player_batting['Group'])
+    if player_bowling is not None and not player_bowling.empty and 'Group' in player_bowling.columns:
+        groups_to_concat.append(player_bowling['Group'])
+    all_groups_fallback = pd.concat(groups_to_concat).dropna().tolist() if groups_to_concat else []
+    
+    team_frequency = {}
+    team_raw_names = {}
+    def extract_base_club_name_local(team_str):
+        return re.sub(r'\s*(cc|club|1st|2nd|3rd|4th|5th|6th|1|2|3|4|5|6|xi|1st xi|2nd xi|3rd xi|4th xi|5th xi|6th xi)$', '', team_str, flags=re.IGNORECASE).strip()
+
+    for grp in all_groups_fallback:
+        if ' v ' in grp:
+            t1, t2 = grp.split(' v ')[0].strip(), grp.split(' v ')[1].split(',')[0].strip()
+            t1, t2 = doc_format_cricket_names(t1, domain), doc_format_cricket_names(t2, domain)
+            
+            b1, b2 = extract_base_club_name_local(t1).strip(), extract_base_club_name_local(t2).strip()
+            team_frequency[b1] = team_frequency.get(b1, 0) + 1
+            team_frequency[b2] = team_frequency.get(b2, 0) + 1
+            team_raw_names.setdefault(b1, set()).add(t1)
+            team_raw_names.setdefault(b2, set()).add(t2)
+            
+    if team_frequency:
+        sorted_teams = sorted(team_frequency.items(), key=lambda item: item[1], reverse=True)
+        if sorted_teams:
+            if len(sorted_teams) > 1 and sorted_teams[0][1] == sorted_teams[1][1]:
+                max_freq = sorted_teams[0][1]
+                top_teams = [t[0] for t in sorted_teams if t[1] == max_freq]
+                raw_combinations = [list(team_raw_names[t])[0] for t in top_teams]
+                return " / ".join(raw_combinations)
+            else:
+                return sorted_teams[0][0]
+    return "Unknown_Club"
 
 def generate_single_player_doc(active_player, player_batting, player_bowling, reg_players_df, domain, aliases_list=None, player_abandoned=None, league_dict=None, cup_df=None):
     player_batting = player_batting.copy() if player_batting is not None and not player_batting.empty else pd.DataFrame()
@@ -1110,30 +1146,7 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             club_name = transfer_club if transfer_club != "Unknown_Club" else primary_club
             
     if primary_club == "Unknown_Club" and transfer_club == "Unknown_Club":
-        groups_to_concat = []
-        if player_batting is not None and not player_batting.empty and 'Group' in player_batting.columns:
-            groups_to_concat.append(player_batting['Group'])
-        if player_bowling is not None and not player_bowling.empty and 'Group' in player_bowling.columns:
-            groups_to_concat.append(player_bowling['Group'])
-        all_groups_fallback = pd.concat(groups_to_concat).dropna().tolist() if groups_to_concat else []
-        
-        team_frequency = {}
-        def extract_base_club_name(team_str):
-            return re.sub(r'\s*(cc|club|1st|2nd|3rd|4th|5th|6th|1|2|3|4|5|6|xi|1st xi|2nd xi|3rd xi|4th xi|5th xi|6th xi)$', '', team_str, flags=re.IGNORECASE).strip()
-
-        for grp in all_groups_fallback:
-            if ' v ' in grp:
-                t1, t2 = grp.split(' v ')[0].strip(), grp.split(' v ')[1].split(',')[0].strip()
-                t1, t2 = doc_format_cricket_names(t1, domain), doc_format_cricket_names(t2, domain)
-                
-                b1, b2 = extract_base_club_name(t1).strip(), extract_base_club_name(t2).strip()
-                team_frequency[b1] = team_frequency.get(b1, 0) + 1
-                team_frequency[b2] = team_frequency.get(b2, 0) + 1
-                
-        if team_frequency:
-            sorted_teams = sorted(team_frequency.items(), key=lambda item: item[1], reverse=True)
-            if sorted_teams:
-                primary_club = sorted_teams[0][0]
+        primary_club = infer_player_club(active_player, player_batting, player_bowling, domain)
     
     if ' (' in active_player: primary_club = active_player.split(' (')[1].replace(')', '')
     
@@ -1234,6 +1247,11 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         if not comp_name and league_dict is not None and team_played_for:
             team_keys = list(league_dict.keys())
             l = get_team_league(team_played_for, team_keys, league_dict, domain)
+            if not l:
+                t1, t2 = extract_teams_from_group(grp)
+                l = get_team_league(t1, team_keys, league_dict, domain)
+                if not l:
+                    l = get_team_league(t2, team_keys, league_dict, domain)
             if l:
                 comp_name = str(l)
         if not comp_name:
@@ -1882,7 +1900,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     official_names = registered_players[reg_name_col].dropna().unique()
     deemed_registered, unregistered_audit, starring_violations = [], [], []
     all_matches_in_range, violation_matches = set(), set()
-    first_unreg_match_date, first_unreg_match_team, player_match_cache = {}, {}, {}
+    first_unreg_match_date, first_unreg_match_team, first_unreg_match_teams_played, player_match_cache = {}, {}, {}, {}
 
     for idx, row in all_appearances.iterrows():
         player, scorecard_name, match_date = row['Player'], row['Scorecard Name'], row['Match Date']
@@ -1987,6 +2005,8 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                 if not filtered.empty:
                     reg_record = filtered
                     match_type, matched_name = f"Exact (Disambiguated via {played_base})", reg_record.iloc[0][reg_name_col]
+                
+                reg_record = reg_record.sort_values(by='Date Registered')
 
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
@@ -2039,6 +2059,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             if player not in first_unreg_match_date:
                 first_unreg_match_date[player] = match_date
                 first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, domain)
+                first_unreg_match_teams_played[player] = f"{doc_formal_team_name(team_a)} v {doc_formal_team_name(team_b)}"
                 if in_date_range:
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
@@ -2053,6 +2074,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
+                        'Deemed Registered Match Teams': first_unreg_match_teams_played[player],
                         'Deemed Registered Club': extract_base_club_name(str(first_unreg_match_team[player])),
                         'Date Registered': reg_date, 'Team A': team_a, 'Team B': team_b,
                         'Match League': match_league, 'Match Logic': f_match_logic
@@ -2148,7 +2170,9 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     for r in unregistered_audit:
         p_name, s_name = r['Stats Name (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        m_league = str(r.get('Match League', 'Unknown League'))
+        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date} - {m_league})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2157,11 +2181,11 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         r_date = r['Date Registered']
         status = r.get('Status', '')
         if 'Played for Wrong Club' in status:
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
+            d_text = f"The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
         elif pd.notna(r_date):
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
+            d_text = f"The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
         else:
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
+            d_text = f"Appeared under the scorecard name \"{s_name}\" (verified via alias map). This official profile is entirely unregistered on the master registry."
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
@@ -2181,7 +2205,9 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
         deemed_club = r.get('Deemed Registered Club')
         club_display = f"Deemed Registered Club: {doc_formal_team_name(deemed_club)}" if deemed_club else f"Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}"
-        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        m_league = str(r.get('Match League', 'Unknown League'))
+        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date} - {m_league})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2189,11 +2215,14 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         
         r_date = r['Date Registered']
         r_det = f"Registered on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
+        r_det = r_det[0].upper() + r_det[1:]
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
         p.add_run("o  Deemed Status: ").bold = True
-        p.add_run(f"Played on {get_ordinal_date(r['Match Date'])} ({r_det}). Deemed registered because {pronoun} previously played on {get_ordinal_date(r['Deemed Registered Date'])}.")
+        deemed_teams = r.get('Deemed Registered Match Teams', '')
+        in_match_str = f" in {deemed_teams}" if deemed_teams else ""
+        p.add_run(f"{r_det}. Deemed registered because {pronoun} previously played{in_match_str} on {get_ordinal_date(r['Deemed Registered Date'])}.")
 
     doc.add_page_break()
     p_star = doc.add_paragraph()
@@ -2206,7 +2235,8 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     for r in starring_violations:
         p_name, s_name = r['Player (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        t_str = f" (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2215,7 +2245,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
         p.add_run("o  Violation Detail: ").bold = True
-        p.add_run(f"Appeared in the match on {get_ordinal_date(r['Match Date'])} for {doc_formal_team_name(r['Actually Played For'])}, but is starred for {doc_formal_team_name(r['Starred For'])}.")
+        p.add_run(f"Played for {doc_formal_team_name(r['Actually Played For'])}, but is starred for {doc_formal_team_name(r['Starred For'])}.")
 
     doc_io = io.BytesIO()
     doc.save(doc_io)
@@ -2330,7 +2360,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     official_names = registered_players[reg_name_col].dropna().unique()
     deemed_registered, unregistered_audit, starring_violations = [], [], []
     all_matches_in_range, violation_matches = set(), set()
-    first_unreg_match_date, first_unreg_match_team, player_match_cache = {}, {}, {}
+    first_unreg_match_date, first_unreg_match_team, first_unreg_match_teams_played, player_match_cache = {}, {}, {}, {}
 
     for idx, row in all_appearances.iterrows():
         player, scorecard_name, match_date = row['Player'], row['Scorecard Name'], row['Match Date']
@@ -2412,6 +2442,8 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                 if not filtered.empty:
                     reg_record = filtered
                     match_type, matched_name = f"Exact (Disambiguated via {played_base})", reg_record.iloc[0][reg_name_col]
+                    
+                reg_record = reg_record.sort_values(by='Date Registered')
 
             reg_date = reg_record.iloc[0]['Date Registered']
             raw_club = reg_record.iloc[0].get('Individual Membership Primary Club', pd.NA)
@@ -2464,6 +2496,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             if player not in first_unreg_match_date:
                 first_unreg_match_date[player] = match_date
                 first_unreg_match_team[player] = determine_player_team_for_row({'Cleaned Name': player, 'Group': row.get('Group', '')}, player_club_map, "Midweek")
+                first_unreg_match_teams_played[player] = f"{doc_formal_team_name(team_a)} v {doc_formal_team_name(team_b)}"
                 if in_date_range:
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
@@ -2478,6 +2511,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
+                        'Deemed Registered Match Teams': first_unreg_match_teams_played[player],
                         'Deemed Registered Club': extract_base_club_name(str(first_unreg_match_team[player])),
                         'Date Registered': reg_date, 'Team A': team_a, 'Team B': team_b,
                         'Match League': match_league, 'Match Logic': f_match_logic
@@ -2581,7 +2615,9 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     for r in unregistered_audit:
         p_name, s_name = r['Stats Name (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        m_league = str(r.get('Match League', 'Unknown League'))
+        t_str = f" [Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date} - {m_league})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2590,11 +2626,11 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         r_date = r['Date Registered']
         status = r.get('Status', '')
         if 'Played for Wrong Club' in status:
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
+            d_text = f"The player is registered for another club ({doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}) and not registered for any club in the match they played in."
         elif pd.notna(r_date):
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])}. The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
+            d_text = f"The official database indicates a registration date of {get_ordinal_date(r_date)} ({(r_date - r['Match Date']).days} days late)."
         else:
-            d_text = f"Appeared in the match on {get_ordinal_date(r['Match Date'])} under the scorecard name \"{s_name}\" (and verified via alias map). This official profile is entirely unregistered on the master registry."
+            d_text = f"Appeared under the scorecard name \"{s_name}\" (verified via alias map). This official profile is entirely unregistered on the master registry."
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
@@ -2613,7 +2649,9 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
         deemed_club = r.get('Deemed Registered Club')
         club_display = f"Deemed Registered Club: {doc_formal_team_name(deemed_club)}" if deemed_club else f"Registered Club: {doc_formal_team_name(r.get('Registered Club', 'Unknown Club'))}"
-        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        m_league = str(r.get('Match League', 'Unknown League'))
+        t_str = f" [{club_display}] (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date} - {m_league})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2621,11 +2659,14 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         
         r_date = r['Date Registered']
         r_det = f"Registered on {get_ordinal_date(r_date)}" if pd.notna(r_date) else "Unregistered profile"
+        r_det = r_det[0].upper() + r_det[1:]
         
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
         p.add_run("o  Deemed Status: ").bold = True
-        p.add_run(f"Played on {get_ordinal_date(r['Match Date'])} ({r_det}). Deemed registered because he previously played an active fixture on {get_ordinal_date(r['Deemed Registered Date'])}.")
+        deemed_teams = r.get('Deemed Registered Match Teams', '')
+        in_match_str = f" in {deemed_teams}" if deemed_teams else ""
+        p.add_run(f"{r_det}. Deemed registered because he previously played an active fixture{in_match_str} on {get_ordinal_date(r['Deemed Registered Date'])}.")
 
     doc.add_page_break()
     p_star = doc.add_paragraph()
@@ -2639,7 +2680,8 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     for r in starring_violations:
         p_name, s_name = r['Player (Cleaned)'], r['Original Scorecard Name']
         d_name = p_name if p_name.lower() == str(s_name).lower() else f"{p_name} (Played as: {s_name})"
-        t_str = f" (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])})"
+        m_date = get_ordinal_date(r['Match Date'])
+        t_str = f" (Match: {doc_formal_team_name(r['Team A'])} v {doc_formal_team_name(r['Team B'])} - {m_date})"
         
         p_p = doc.add_paragraph(style='List Bullet')
         p_p.add_run(f"{d_name}").bold = True
@@ -2648,7 +2690,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         p = doc.add_paragraph()
         p.paragraph_format.left_indent = Pt(36)
         p.add_run("o  Violation Detail: ").bold = True
-        p.add_run(f"Represented {doc_formal_team_name(r['Midweek Team'])} on {get_ordinal_date(r['Match Date'])}. This player is completely ineligible for Midweek cricket as he is officially starred for weekend squad '{r['Starred Rank']}', which plays in weekend tier '{r['Weekend Division']}' (Junior League 3 or above tiers are ineligible).")
+        p.add_run(f"Represented {doc_formal_team_name(r['Midweek Team'])}. This player is completely ineligible for Midweek cricket as he is officially starred for weekend squad '{r['Starred Rank']}', which plays in weekend tier '{r['Weekend Division']}' (Junior League 3 or above tiers are ineligible).")
 
     doc_io = io.BytesIO()
     doc.save(doc_io)

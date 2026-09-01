@@ -343,6 +343,12 @@ if app_mode == "Player Word Doc Generator":
                         club = st.session_state.player_club_map.get(name.lower(), None)
                         if club and str(club).lower() not in ['nan', 'none', '', 'unknown club']:
                             return str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
+                            
+                        p_bat = matched_batting[matched_batting['Name'] == name] if not matched_batting.empty else None
+                        p_bowl = matched_bowling[matched_bowling['Bowler'] == name] if not matched_bowling.empty else None
+                        inferred = eng.infer_player_club(name, p_bat, p_bowl, domain)
+                        if inferred != "Unknown_Club": return inferred
+                        
                         return "Unknown Club"
 
                     def format_player_display(name):
