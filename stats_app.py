@@ -572,7 +572,6 @@ elif app_mode == "League Milestones Report":
         domain = st.radio("Choose the dataset domain:", ["Men's", "Women's"], horizontal=True)
 
         with st.sidebar:
-            st.divider() 
             c_files = eng.DEFAULT_FILES[domain]
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"ms_reg_{domain}")

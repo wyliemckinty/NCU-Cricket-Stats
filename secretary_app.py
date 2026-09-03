@@ -184,7 +184,6 @@ if app_mode == "Player Word Doc Generator":
         domain = st.radio("Choose the dataset domain to search:", ["Men's", "Women's", "Midweek"], horizontal=True)
 
         with st.sidebar:
-            st.divider() 
             c_files = eng.DEFAULT_FILES[domain]
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"doc_reg_{domain}")
@@ -414,7 +413,6 @@ elif app_mode == "Registration Checks":
         domain = st.radio("Choose the dataset domain to audit:", ["Men's", "Women's"], horizontal=True)
 
         with st.sidebar:
-            st.divider()           
             st.subheader("Select Date Range")
             start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=1))
             end_date = st.date_input("End Date", value=datetime.today())
@@ -481,12 +479,9 @@ elif app_mode == "Registration Checks":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Audit Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-#                         with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        pass
-#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        pass
-#                         with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
-                        pass
+                        with m_col1: st.metric(label="⚠️ Unregistered Match Appearances", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        with m_col2: st.metric(label="ℹ️ Deemed Registered Records", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        with m_col3: st.metric(label="🚨 Starring Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
@@ -523,7 +518,6 @@ elif app_mode == "Midweek Registration & Starring Check":
         st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
     else:
         with st.sidebar:
-            st.divider()           
             st.subheader("Select Date Range")
             start_date = st.date_input("Start Date", value=datetime.today() - timedelta(days=1))
             end_date = st.date_input("End Date", value=datetime.today())
@@ -569,12 +563,9 @@ elif app_mode == "Midweek Registration & Starring Check":
                         st.success("✅ Audit complete!")
                         st.subheader("📊 Midweek Discrepancy Overview")
                         m_col1, m_col2, m_col3 = st.columns(3)
-#                         with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
-                        pass
-#                         with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
-                        pass
-#                         with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
-                        pass
+                        with m_col1: st.metric(label="⚠️ Unregistered Midweek Players", value=unreg_count, delta=f"{unreg_count} Flagged", delta_color="inverse")
+                        with m_col2: st.metric(label="ℹ️ Deemed Registered Players", value=deemed_count, delta=f"{deemed_count} Tracked", delta_color="off")
+                        with m_col3: st.metric(label="🚨 Midweek Starring Ceiling Violations", value=star_count, delta=f"{star_count} Flagged", delta_color="inverse")
 
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
@@ -614,7 +605,6 @@ elif app_mode == "Starring & Inactivity Reports":
         include_irish = st.toggle("Include Irish Competitions in Inactivity Reports?", value=False, key="star_include_irish")
 
     with st.sidebar:
-        st.divider() 
         c_files = eng.DEFAULT_FILES[domain]
         with st.expander("📁 File Path Configurations", expanded=False):
             f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"star_reg_{domain}")
@@ -655,10 +645,8 @@ elif app_mode == "Starring & Inactivity Reports":
                     st.success("✅ Reports generated successfully!")
                     st.subheader("📊 Exporter Output Summary")
                     col_star1, col_star2 = st.columns(2)
-#                     with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
-                    pass
-#                     with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
-                    pass
+                    with col_star1: st.metric(label="Clubs Workbooks Created", value=workbooks_count)
+                    with col_star2: st.metric(label="Flagged Unregistered Starred Players List", value="Yes" if has_unreg else "No")
                     
                     st.divider()
                     st.download_button("📥 Download Club Reports (ZIP)", data=zip_buffer.getvalue(), file_name=f"{domain.replace('''s''', '')}_Starring_Reports_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip", mime="application/zip", type="primary")
@@ -673,7 +661,6 @@ elif app_mode == "Club Contacts Directory":
     st.markdown("Search and filter official union contacts by Club, Team Tier, or Union-Wide Role with one-tap calling and messaging.")
 
     with st.sidebar:
-        st.divider()
         with st.expander("📁 Contacts Master Configuration", expanded=False):
             f_contacts = st.text_input("Contacts Excel File", value="2026 Season Club Contacts.xlsx", key="contacts_filepath")
 
