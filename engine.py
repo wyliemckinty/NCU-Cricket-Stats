@@ -63,6 +63,7 @@ except ImportError:
 DEFAULT_FILES = {
     "Men's": {
         "reg": "1. NCU_Registered_Players.xlsx",
+        "id_map": "NCU_Master_ID_Mapping.xlsx",
         "alias": "2. NCU_Validated_Aliases_Master.xlsx",
         "starring": "3. NCU Complete -Men's- Starring List from 1st June.xlsx",
         "unreg": "4. Unregistered_Manual_Map.xlsx",
@@ -74,6 +75,7 @@ DEFAULT_FILES = {
     },
     "Women's": {
         "reg": "1. NCU_Registered_Players.xlsx",
+        "id_map": "Proposed_Womens_ID_Mapping_v7.xlsx",
         "alias": "12. NCU_Validated_Women's Aliases_Master.xlsx",
         "starring": "13. NCU Complete Women's Starring List from 1st June.xlsx",
         "unreg": "4. Unregistered_Manual_Map.xlsx",
@@ -85,6 +87,7 @@ DEFAULT_FILES = {
     },
     "Midweek": {
         "reg": "1. NCU_Registered_Players.xlsx",
+        "id_map": "NCU_Master_ID_Mapping.xlsx",
         "alias": "2. NCU_Validated_Aliases_Master.xlsx",
         "starring": "", 
         "unreg": "4. Unregistered_Manual_Map.xlsx",
@@ -110,6 +113,7 @@ CLUB_ALIASES = {
 
 KNOWN_DUPLICATES = {
     'Adam Gardner': ['North Down', 'Carrickfergus'],
+    'Adam McMaster': ['Templepatrick', 'Ballymena'],
     'Adam Mcmaster': ['Templepatrick', 'Ballymena'],
     'Angus Bell': ['Donacloney Mill', 'Lisburn'],
     'David Millar': ['Instonians', 'Ballymena'],
@@ -147,12 +151,16 @@ KNOWN_DUPLICATES = {
 def cached_read_excel(filepath, mtime):
     if not os.path.exists(filepath):
         return pd.DataFrame()
+    if str(filepath).lower().endswith('.csv'):
+        return pd.read_csv(filepath)
     return pd.read_excel(filepath)
 
 @st.cache_data(show_spinner="Loading sheet...")
 def cached_read_excel_sheet(filepath, mtime, sheet_name=None, header='infer'):
     if not os.path.exists(filepath):
         return pd.DataFrame()
+    if str(filepath).lower().endswith('.csv'):
+        return pd.read_csv(filepath, header=header)
     return pd.read_excel(filepath, sheet_name=sheet_name, header=header)
 
 def get_excel_df(filepath):
@@ -168,23 +176,117 @@ def get_excel_sheet_df(filepath, sheet_name=None, header='infer'):
 # ==========================================
 # UNIFIED ENGINE FUNCTIONS 
 # ==========================================
+def fix_celtic_casing(name):
+    """
+    Standardizes Scottish/Irish surname casing for consistent display and grouping.
+    Converts Mc[a-z] to Mc[A-Z], e.g. Mckeown -> McKeown, Mcilwaine -> McIlwaine.
+    Converts O'[a-z] to O'[A-Z], e.g. O'neill -> O'Neill.
+    """
+    if not isinstance(name, str):
+        return name
+    s = re.sub(r'\bMc([a-z])', lambda m: f"Mc{m.group(1).upper()}", name)
+    s = re.sub(r"\bO'([a-z])", lambda m: f"O'{m.group(1).upper()}", s)
+    s = re.sub(r"\bO’([a-z])", lambda m: f"O’{m.group(1).upper()}", s)
+    return s
+
 def build_alias_map(aliases, domain):
     alias_map = {}
     if 'Input Name (Scorecard/Stats)' in aliases.columns and 'Official Registered Name' in aliases.columns:
         aliases_deduped = aliases.drop_duplicates(subset=['Input Name (Scorecard/Stats)'], keep='last')
         for idx, row in aliases_deduped.iterrows():
             alias_val = str(row['Input Name (Scorecard/Stats)']).replace('‡', '').strip().lower() 
-            official_val = str(row['Official Registered Name']).replace('‡', '').strip()
+            official_val = fix_celtic_casing(str(row['Official Registered Name']).replace('‡', '').strip())
             if alias_val != 'nan':
                 alias_map[alias_val] = official_val
     else:
         for idx, row in aliases.iterrows():
             alias_val = str(row.iloc[0]).replace('‡', '').strip().lower() 
-            official_val = str(row.iloc[1]).replace('‡', '').strip()
+            official_val = fix_celtic_casing(str(row.iloc[1]).replace('‡', '').strip())
             if alias_val != 'nan':
                 alias_map[alias_val] = official_val
                 
     return alias_map
+
+def build_id_map(id_map_df):
+    """
+    Builds a lookup dictionary from the Master ID Mapping DataFrame.
+    Keyed by normalized NV_Play_ID (lowercase string UUID).
+    """
+    id_map = {}
+    if id_map_df is None or id_map_df.empty:
+        return id_map
+    
+    col_nv_id = next((c for c in id_map_df.columns if 'nv' in c.lower() and 'id' in c.lower()), 'NV_Play_ID')
+    col_s80_id = next((c for c in id_map_df.columns if 'sport80' in c.lower() and 'id' in c.lower()), 'Sport80_ID')
+    col_s80_name = next((c for c in id_map_df.columns if 'sport80' in c.lower() and 'name' in c.lower()), 'Sport80_Name')
+    col_s80_club = next((c for c in id_map_df.columns if 'sport80' in c.lower() and 'club' in c.lower()), 'Sport80_Club')
+    col_conf = next((c for c in id_map_df.columns if 'conf' in c.lower()), 'Match_Confidence')
+    col_nv_name = next((c for c in id_map_df.columns if 'nv' in c.lower() and 'name' in c.lower()), 'NV_Play_Name')
+
+    for _, row in id_map_df.iterrows():
+        nv_id = row.get(col_nv_id)
+        if pd.notna(nv_id):
+            clean_nv_id = str(nv_id).strip().lower()
+            if clean_nv_id and clean_nv_id != 'nan':
+                s80_id_val = row.get(col_s80_id)
+                clean_s80_id = ""
+                if pd.notna(s80_id_val) and str(s80_id_val).strip().lower() != 'nan':
+                    clean_s80_id = str(s80_id_val).replace('.0', '').strip()
+                
+                s80_name_val = fix_celtic_casing(str(row.get(col_s80_name, '')).strip()) if pd.notna(row.get(col_s80_name)) else ""
+                s80_club_val = str(row.get(col_s80_club, '')).strip() if pd.notna(row.get(col_s80_club)) else ""
+                conf_val = str(row.get(col_conf, '')).strip() if pd.notna(row.get(col_conf)) else ""
+                nv_name_val = fix_celtic_casing(str(row.get(col_nv_name, '')).strip()) if pd.notna(row.get(col_nv_name)) else ""
+
+                id_map[clean_nv_id] = {
+                    'sport80_id': clean_s80_id,
+                    'sport80_name': s80_name_val,
+                    'sport80_club': s80_club_val,
+                    'confidence': conf_val,
+                    'nv_play_name': nv_name_val
+                }
+    return id_map
+
+def extract_row_player_id(row, id_cols=None):
+    """
+    Extracts NV Play player UUID from a scorecard/stats row if present.
+    """
+    candidate_cols = id_cols if id_cols else [
+        'Batter ID', 'Bowler ID', 'Player ID', 'NV_Play_ID', 'NV Play ID', 'Player NV Play ID',
+        'BatterId', 'BowlerId', 'PlayerId', 'ID', 'Player UUID', 'Player_ID'
+    ]
+    for col in candidate_cols:
+        if col in row and pd.notna(row[col]):
+            val = str(row[col]).replace('.0', '').strip().lower()
+            if val and val != 'nan':
+                return val
+    return None
+
+def resolve_player_from_row(row, raw_name, id_map, alias_map, player_club_map=None, id_cols=None):
+    """
+    Resolves a scorecard/stats row to a canonical player identity.
+    Checks id_map first using player UUID; falls back to cleanse_name_contextual.
+    Returns: (cleaned_name, sport80_id, sport80_club, is_id_resolved)
+    """
+    player_uuid = extract_row_player_id(row, id_cols=id_cols)
+    if player_uuid and id_map and player_uuid in id_map:
+        info = id_map[player_uuid]
+        sport80_id = info.get('sport80_id', '')
+        sport80_club = info.get('sport80_club', '')
+        raw_canonical = info.get('sport80_name') or info.get('nv_play_name') or str(raw_name).strip()
+        canonical_name = fix_celtic_casing(raw_canonical)
+        
+        # Format name with club if in KNOWN_DUPLICATES
+        if canonical_name in KNOWN_DUPLICATES and sport80_club:
+            short_club = extract_base_club_name(sport80_club)
+            cleaned_name = f"{canonical_name} ({short_club})"
+        else:
+            cleaned_name = canonical_name
+            
+        return fix_celtic_casing(cleaned_name), sport80_id, sport80_club, True
+        
+    fallback_name = fix_celtic_casing(cleanse_name_contextual(raw_name, row, alias_map, player_club_map))
+    return fallback_name, None, None, False
 
 def build_secondary_team_map(secondary_df, alias_map):
     sec_map = {}
@@ -216,11 +318,11 @@ def get_alias_used_for_player(official_name, search_input, alias_map):
     return None
 
 def cleanse_name(name, alias_map):
-    original_name = str(name).replace('‡', '').strip()
-    return alias_map.get(original_name.lower(), original_name)
+    original_name = fix_celtic_casing(str(name).replace('‡', '').strip())
+    return fix_celtic_casing(alias_map.get(original_name.lower(), original_name))
 
 def cleanse_name_contextual(name, row, alias_map, player_club_map=None):
-    original_name = str(name).replace('‡', '').strip()
+    original_name = fix_celtic_casing(str(name).replace('‡', '').strip())
     original_name_lower = original_name.lower()
     group_lower = str(row.get('Group', row.get('Match', ''))).lower()
     row_team = str(row.get('Team', '')).lower()
@@ -266,7 +368,7 @@ def cleanse_name_contextual(name, row, alias_map, player_club_map=None):
                             return f"{original_name} ({club})"
                 return f"{original_name} ({clubs[0]})"
                 
-    return alias_map.get(original_name_lower, original_name)
+    return fix_celtic_casing(alias_map.get(original_name_lower, original_name))
 
 def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None):
     club_map = {}
@@ -708,6 +810,11 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
     for col in ['Innings', 'Balls', 'Maidens', 'Runs', 'Wickets']:
         if col in bowling_df.columns: bowling_df[col] = pd.to_numeric(bowling_df[col], errors='coerce').fillna(0)
             
+    if 'Cleaned Name' in batting_df.columns:
+        batting_df['Cleaned Name'] = batting_df['Cleaned Name'].apply(fix_celtic_casing)
+    if 'Cleaned Name' in bowling_df.columns:
+        bowling_df['Cleaned Name'] = bowling_df['Cleaned Name'].apply(fix_celtic_casing)
+            
     player_fixture_clubs = build_player_fixture_club_counts(batting_df, bowling_df, alias_map=alias_map)
     
     batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
@@ -1145,6 +1252,15 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
                     
             club_name = transfer_club if transfer_club != "Unknown_Club" else primary_club
             
+        sport80_id = None
+        if not reg_match.empty:
+            for id_col in ['Individual Membership CI No.', 'Sport80_ID', 'Sport80 ID', 'CI No']:
+                if id_col in reg_match.columns:
+                    vals = reg_match[id_col].dropna().values
+                    if len(vals) > 0 and str(vals[0]).strip() and str(vals[0]).strip().lower() != 'nan':
+                        sport80_id = str(vals[0]).replace('.0', '').strip()
+                        break
+            
     if primary_club == "Unknown_Club" and transfer_club == "Unknown_Club":
         primary_club = infer_player_club(active_player, player_batting, player_bowling, domain)
     
@@ -1317,6 +1433,15 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
         heading_title = f"{display_player_name} - {header_club_name} - Season Summary ({domain_label})\n"
         
     add_custom_heading(doc, heading_title, level=1)
+    
+    if sport80_id:
+        p_s80 = doc.add_paragraph()
+        p_s80.paragraph_format.space_before = Pt(0)
+        p_s80.paragraph_format.space_after = Pt(6)
+        r_s80 = p_s80.add_run(f"Sport80 Member ID: {sport80_id}")
+        r_s80.font.name, r_s80.font.size = 'Calibri', Pt(10)
+        r_s80.bold = True
+        r_s80.font.color.rgb = RGBColor(0, 0, 128)
     
     add_custom_heading(doc, "Chronological Match Appearances", level=2)
     
@@ -1735,7 +1860,7 @@ def export_and_format_excel(df, writer, sheet_name):
         else: worksheet.set_column(col_num, col_num, max_width)
 
 @st.cache_data(show_spinner="Running registration & starring audit...")
-def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_cup=None, f_abandoned=None):
+def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_cup=None, f_abandoned=None, f_id_map=None):
     registered_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
     league_structure = pd.read_excel(f_league)
@@ -1826,6 +1951,11 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         pronoun = "she"
 
     registered_players['Date Registered'] = pd.to_datetime(registered_players['Date Registered'], dayfirst=True, errors='coerce').dt.normalize()
+    ci_col = next((c for c in registered_players.columns if 'individual membership ci' in str(c).lower() or 'sport80' in str(c).lower() or 'ci no' in str(c).lower()), None)
+    if ci_col:
+        registered_players['_ci_no_clean'] = registered_players[ci_col].dropna().astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    else:
+        registered_players['_ci_no_clean'] = ""
 
     starring_df = pd.DataFrame(columns=['Rank', 'Surname', 'Forename', 'XI_Level', 'Club', 'Full Name'])
     if f_starring and os.path.exists(f_starring):
@@ -1861,14 +1991,34 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     player_club_map = build_player_club_map(registered_players, alias_map, domain, unreg_map_df=unreg_df) 
     player_club_map = infer_unregistered_player_clubs(batting_stats, bowling_stats, player_club_map, min_matches=2)
     
-    batting_stats['Cleaned Name'] = batting_stats.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-    bowling_stats['Cleaned Name'] = bowling_stats.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+    if not f_id_map:
+        f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
+    id_map = {}
+    if f_id_map and os.path.exists(f_id_map):
+        id_map_df = pd.read_excel(f_id_map)
+        id_map = build_id_map(id_map_df)
+        
+    def process_bat_row(r):
+        c_name, s80_id, _, _ = resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map)
+        return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
+
+    def process_bowl_row(r):
+        c_name, s80_id, _, _ = resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)
+        return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
+
+    bat_resolved = batting_stats.apply(process_bat_row, axis=1)
+    batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
+    batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+
+    bowl_resolved = bowling_stats.apply(process_bowl_row, axis=1)
+    bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
+    bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
     
     batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
     bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
 
-    batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Is_Irish_Match']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
-    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Is_Irish_Match']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
+    batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
+    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
     
     app_dfs = [batters, bowlers]
 
@@ -1882,10 +2032,12 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             ab_name_col = 'Name' if 'Name' in abandoned_stats.columns else abandoned_stats.columns[1]
             
             abandoned_stats['Is_Irish_Match'] = False
-            abandoned_stats['Cleaned Name'] = abandoned_stats.apply(lambda r: cleanse_name_contextual(r[ab_name_col], r, alias_map, player_club_map), axis=1)
+            ab_resolved = abandoned_stats.apply(lambda r: resolve_player_from_row(r, r[ab_name_col], id_map, alias_map, player_club_map), axis=1)
+            abandoned_stats['Cleaned Name'] = [res[0] for res in ab_resolved]
+            abandoned_stats['Sport80_ID'] = [res[1] for res in ab_resolved]
             abandoned_stats['Group'] = abandoned_stats[ab_match_col].apply(lambda x: doc_format_cricket_names(x, domain))
             
-            ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col, 'Is_Irish_Match']].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
+            ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col, 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
             app_dfs.append(ab_apps)
 
     all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player'])
@@ -1935,8 +2087,20 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             if not get_team_league(played_for, team_keys, league_dict, domain):
                 continue
 
+        row_s80_id = row.get('Sport80_ID')
+        has_valid_s80 = pd.notna(row_s80_id) and str(row_s80_id).strip() and str(row_s80_id).strip().lower() != 'nan'
+
         if player not in player_match_cache:
-            if domain == "Men's" and player.lower() == 'james shannon':
+            if has_valid_s80 and '_ci_no_clean' in registered_players.columns and not registered_players['_ci_no_clean'].empty:
+                clean_s80 = str(row_s80_id).replace('.0', '').strip()
+                matched_reg = registered_players[registered_players['_ci_no_clean'] == clean_s80]
+                if not matched_reg.empty:
+                    reg_record = matched_reg
+                    match_type, matched_name = "Sport80 ID Exact", reg_record.iloc[0][reg_name_col]
+                else:
+                    reg_record = pd.DataFrame()
+                    match_type, matched_name = "Sport80 ID (Unregistered/Lapsed)", scorecard_name
+            elif domain == "Men's" and player.lower() == 'james shannon':
                 if 'holywood' in str(team_a).lower() or 'holywood' in str(team_b).lower():
                     reg_record = registered_players[(registered_players[reg_name_col].str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Holywood', case=False, na=False))].copy()
                     if not reg_record.empty: reg_record['Date Registered'] = pd.to_datetime('2026-03-05', dayfirst=True).normalize()
@@ -1979,9 +2143,18 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     if score >= 90:
                         reg_record = registered_players[registered_players[reg_name_col] == best_match]
                         match_type, matched_name = f"Fuzzy ({score}%)", best_match
-            player_match_cache[player] = (reg_record, match_type, matched_name)
+            
+            s80_val = ""
+            if has_valid_s80:
+                s80_val = str(row_s80_id).replace('.0', '').strip()
+            elif not reg_record.empty and '_ci_no_clean' in reg_record.columns:
+                ci_series = reg_record['_ci_no_clean'].dropna()
+                if not ci_series.empty and str(ci_series.iloc[0]).strip() and str(ci_series.iloc[0]).strip().lower() != 'nan':
+                    s80_val = str(ci_series.iloc[0]).strip()
+
+            player_match_cache[player] = (reg_record, match_type, matched_name, s80_val)
         else:
-            reg_record, match_type, matched_name = player_match_cache[player]
+            reg_record, match_type, matched_name, s80_val = player_match_cache[player]
 
         is_registered = False
         reg_date, reg_club = pd.NaT, "Unknown Club"
@@ -2064,6 +2237,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                        'Sport80 ID': s80_val,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Date Registered': reg_date, 'Status': status_text,
                         'Team A': team_a, 'Team B': team_b, 'Match League': match_league, 'Match Logic': f_match_logic
@@ -2072,6 +2246,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                 if in_date_range:
                     deemed_registered.append({
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                        'Sport80 ID': s80_val,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
                         'Deemed Registered Match Teams': first_unreg_match_teams_played[player],
@@ -2087,6 +2262,12 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
             player, scorecard_name, team_a, team_b = row['Player'], row['Scorecard Name'], str(row['Team A']), str(row['Team B'])
             if str(player).strip().lower() in exclusions: continue
             
+            p_s80 = ""
+            if player in player_match_cache:
+                p_s80 = player_match_cache[player][3]
+            elif pd.notna(row.get('Sport80_ID')):
+                p_s80 = str(row.get('Sport80_ID')).replace('.0', '').strip()
+                
             p_stars = starring_df[starring_df['Cleaned Name'].str.strip().str.lower() == player.lower()]
             if not p_stars.empty:
                 s_rank, s_club = str(p_stars.iloc[0]['XI_Level']), str(p_stars.iloc[0]['Club'])
@@ -2102,6 +2283,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                         if p_rank_int > s_rank_int:
                             starring_violations.append({
                                 'Player (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                                'Sport80 ID': p_s80,
                                 'Starred For': f"{s_club} {s_rank}", 'Actually Played For': played_team,
                                 'Team A': team_a, 'Team B': team_b, 'Match Date': row['Match Date'], 'Match Group': row['Group']
                             })
@@ -2256,7 +2438,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
 # MIDWEEK REGISTRATION ENGINE
 # ==========================================
 @st.cache_data(show_spinner="Running midweek registration audit...")
-def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=None):
+def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=None, f_id_map=None):
     registered_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
     weekend_structure = pd.read_excel(f_weekend_league)
@@ -2270,6 +2452,11 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     registered_players.loc[registered_players[reg_name_col].str.lower() == 'matthew humphreys', 'Individual Membership Primary Club'] = 'Instonians Cricket Club'
     registered_players[reg_name_col] = registered_players[reg_name_col].str.replace('Hoffmeyr', 'Hofmeyr', regex=False)
     registered_players['Date Registered'] = pd.to_datetime(registered_players['Date Registered'], dayfirst=True, errors='coerce').dt.normalize()
+    ci_col = next((c for c in registered_players.columns if 'individual membership ci' in str(c).lower() or 'sport80' in str(c).lower() or 'ci no' in str(c).lower()), None)
+    if ci_col:
+        registered_players['_ci_no_clean'] = registered_players[ci_col].dropna().astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    else:
+        registered_players['_ci_no_clean'] = ""
 
     starring_df = pd.DataFrame(columns=['Rank', 'Surname', 'Forename', 'XI_Level', 'Club', 'Full Name'])
     if f_starring and os.path.exists(f_starring):
@@ -2305,8 +2492,28 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     player_club_map = build_player_club_map(registered_players, alias_map, "Midweek", unreg_map_df=unreg_df)
     player_club_map = infer_unregistered_player_clubs(batting_stats, bowling_stats, player_club_map, min_matches=2)
     
-    batting_stats['Cleaned Name'] = batting_stats.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-    bowling_stats['Cleaned Name'] = bowling_stats.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+    if not f_id_map:
+        f_id_map = DEFAULT_FILES.get("Midweek", {}).get("id_map", "")
+    id_map = {}
+    if f_id_map and os.path.exists(f_id_map):
+        id_map_df = pd.read_excel(f_id_map)
+        id_map = build_id_map(id_map_df)
+        
+    def process_mw_bat_row(r):
+        c_name, s80_id, _, _ = resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map)
+        return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
+
+    def process_mw_bowl_row(r):
+        c_name, s80_id, _, _ = resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)
+        return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
+
+    bat_resolved = batting_stats.apply(process_mw_bat_row, axis=1)
+    batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
+    batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+
+    bowl_resolved = bowling_stats.apply(process_mw_bowl_row, axis=1)
+    bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
+    bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
     
     batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
     bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
@@ -2326,8 +2533,8 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             return team_a.strip(), team_b.strip(), match_date
         except: return None, None, None
 
-    batters = batting_stats[['Group', 'Cleaned Name', 'Name']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
-    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
+    batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
+    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
     
     app_dfs = [batters, bowlers]
 
@@ -2340,10 +2547,13 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             ab_match_col = 'Group' if 'Group' in abandoned_stats.columns else ('Match' if 'Match' in abandoned_stats.columns else abandoned_stats.columns[0])
             ab_name_col = 'Name' if 'Name' in abandoned_stats.columns else abandoned_stats.columns[1]
             
-            abandoned_stats['Cleaned Name'] = abandoned_stats.apply(lambda r: cleanse_name_contextual(r[ab_name_col], r, alias_map, player_club_map), axis=1)
+            abandoned_stats['Is_Irish_Match'] = False
+            ab_resolved = abandoned_stats.apply(lambda r: resolve_player_from_row(r, r[ab_name_col], id_map, alias_map, player_club_map), axis=1)
+            abandoned_stats['Cleaned Name'] = [res[0] for res in ab_resolved]
+            abandoned_stats['Sport80_ID'] = [res[1] for res in ab_resolved]
             abandoned_stats['Group'] = abandoned_stats[ab_match_col].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
             
-            ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col]].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
+            ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col, 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
             app_dfs.append(ab_apps)
 
     all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player'])
@@ -2372,8 +2582,20 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         
         if in_date_range: all_matches_in_range.add((team_a, team_b, match_league, match_date))
 
+        row_s80_id = row.get('Sport80_ID')
+        has_valid_s80 = pd.notna(row_s80_id) and str(row_s80_id).strip() and str(row_s80_id).strip().lower() != 'nan'
+
         if player not in player_match_cache:
-            if player.lower() == 'james shannon':
+            if has_valid_s80 and '_ci_no_clean' in registered_players.columns and not registered_players['_ci_no_clean'].empty:
+                clean_s80 = str(row_s80_id).replace('.0', '').strip()
+                matched_reg = registered_players[registered_players['_ci_no_clean'] == clean_s80]
+                if not matched_reg.empty:
+                    reg_record = matched_reg
+                    match_type, matched_name = "Sport80 ID Exact", reg_record.iloc[0][reg_name_col]
+                else:
+                    reg_record = pd.DataFrame()
+                    match_type, matched_name = "Sport80 ID (Unregistered/Lapsed)", scorecard_name
+            elif player.lower() == 'james shannon':
                 if 'holywood' in str(team_a).lower() or 'holywood' in str(team_b).lower():
                     reg_record = registered_players[(registered_players[reg_name_col].str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Holywood', case=False, na=False))].copy()
                     if not reg_record.empty: reg_record['Date Registered'] = pd.to_datetime('2026-03-05', dayfirst=True).normalize()
@@ -2416,9 +2638,18 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     if score >= 90:
                         reg_record = registered_players[registered_players[reg_name_col] == best_match]
                         match_type, matched_name = f"Fuzzy ({score}%)", best_match
-            player_match_cache[player] = (reg_record, match_type, matched_name)
+            
+            s80_val = ""
+            if has_valid_s80:
+                s80_val = str(row_s80_id).replace('.0', '').strip()
+            elif not reg_record.empty and '_ci_no_clean' in reg_record.columns:
+                ci_series = reg_record['_ci_no_clean'].dropna()
+                if not ci_series.empty and str(ci_series.iloc[0]).strip() and str(ci_series.iloc[0]).strip().lower() != 'nan':
+                    s80_val = str(ci_series.iloc[0]).strip()
+
+            player_match_cache[player] = (reg_record, match_type, matched_name, s80_val)
         else:
-            reg_record, match_type, matched_name = player_match_cache[player]
+            reg_record, match_type, matched_name, s80_val = player_match_cache[player]
 
         is_registered = False
         reg_date, reg_club = pd.NaT, "Unknown Club"
@@ -2501,6 +2732,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                     violation_matches.add((team_a, team_b, match_league, match_date))
                     unregistered_audit.append({
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                        'Sport80 ID': s80_val,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Date Registered': reg_date, 'Status': status_text,
                         'Team A': team_a, 'Team B': team_b, 'Match League': match_league, 'Match Logic': f_match_logic
@@ -2509,6 +2741,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                 if in_date_range:
                     deemed_registered.append({
                         'Stats Name (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                        'Sport80 ID': s80_val,
                         'Matched Registered Name': f_matched_name, 'Registered Club': reg_club,
                         'Match Date': match_date, 'Deemed Registered Date': first_unreg_match_date[player],
                         'Deemed Registered Match Teams': first_unreg_match_teams_played[player],
@@ -2527,6 +2760,12 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
             player, scorecard_name = row['Player'], row['Scorecard Name']
             team_a, team_b = str(row['Team A']), str(row['Team B'])
             if str(player).strip().lower() in international_exclusions: continue
+            
+            p_s80 = ""
+            if player in player_match_cache:
+                p_s80 = player_match_cache[player][3]
+            elif pd.notna(row.get('Sport80_ID')):
+                p_s80 = str(row.get('Sport80_ID')).replace('.0', '').strip()
                 
             player_stars = starring_df[starring_df['Cleaned Name'].str.strip().str.lower() == player.lower()]
             if not player_stars.empty:
@@ -2550,6 +2789,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                         mw_team = team_a if starred_club.lower() in team_a.lower() else (team_b if starred_club.lower() in team_b.lower() else team_a)
                         starring_violations.append({
                             'Player (Cleaned)': player, 'Original Scorecard Name': scorecard_name,
+                            'Sport80 ID': p_s80,
                             'Starred Rank': full_weekend_team, 'Weekend Division': weekend_division,
                             'Midweek Team': mw_team, 'Team A': team_a, 'Team B': team_b,
                             'Match Date': row['Match Date'], 'Match Group': row['Group']
@@ -3664,16 +3904,30 @@ def generate_unregistered_fines_only(audit_file):
 # MILESTONES ENGINE SPECIFIC FUNCTIONS
 # ==========================================
 @st.cache_data(show_spinner="Generating milestones report...")
-def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup=None):
+def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup=None, f_id_map=None, f_secondary=None):
     reg_players = pd.read_excel(f_reg)
     aliases = pd.read_excel(f_alias)
     league_structure = pd.read_excel(f_league)
     batting_df = pd.read_excel(f_bat)
     bowling_df = pd.read_excel(f_bowl)
     
+    if not f_id_map:
+        f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
+    id_map = {}
+    if f_id_map and os.path.exists(f_id_map):
+        id_map_df = get_excel_df(f_id_map)
+        id_map = build_id_map(id_map_df)
+    
     alias_map = build_alias_map(aliases, domain)
     player_club_map = build_player_club_map(reg_players, alias_map, domain)
     league_dict, team_keys, _ = build_league_dict(league_structure)
+    
+    if not f_secondary:
+        f_secondary = DEFAULT_FILES.get(domain, {}).get("secondary", "5. Secondary_Team_Map.xlsx")
+    secondary_map = {}
+    if f_secondary and os.path.exists(f_secondary):
+        sec_df = get_excel_df(f_secondary)
+        secondary_map = build_secondary_team_map(sec_df, alias_map)
     
     if domain == "Women's":
         wicket_threshold = 5
@@ -3816,8 +4070,8 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
     batting_df = batting_df[~batting_df['Group'].apply(is_cup_match)]
     bowling_df = bowling_df[~bowling_df['Group'].apply(is_cup_match)]
 
-    batting_df['Cleaned Name'] = batting_df.apply(lambda r: cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-    bowling_df['Cleaned Name'] = bowling_df.apply(lambda r: cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+    batting_df['Cleaned Name'] = batting_df.apply(lambda r: resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map, id_cols=['Batter ID', 'Player ID', 'ID'])[0], axis=1)
+    bowling_df['Cleaned Name'] = bowling_df.apply(lambda r: resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map, id_cols=['Bowler ID', 'Player ID', 'ID'])[0], axis=1)
     
     batting_df['Runs'] = pd.to_numeric(batting_df['Runs'], errors='coerce').fillna(0)
     bowling_df['Wickets'] = pd.to_numeric(bowling_df['Wickets'], errors='coerce').fillna(0)

@@ -195,6 +195,7 @@ if app_mode == "Player Word Doc Generator":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"doc_reg_{domain}")
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"doc_alias_{domain}")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"doc_id_map_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
@@ -232,6 +233,7 @@ if app_mode == "Player Word Doc Generator":
         if st.session_state.player_search_active:
             current_query = st.session_state.player_search_query
             files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
+            if f_id_map: files_to_check.append(f_id_map)
             if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
                 
             missing_files = [f for f in files_to_check if not os.path.exists(f)]
@@ -244,6 +246,8 @@ if app_mode == "Player Word Doc Generator":
                     with st.spinner("Searching datasets and building options..."):
                         reg_players = get_excel_df(f_reg)
                         aliases = get_excel_df(f_alias)
+                        id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else pd.DataFrame()
+                        id_map = eng.build_id_map(id_map_df)
                         batting = get_excel_df(f_bat)
                         bowling = get_excel_df(f_bowl)
                         abandoned_df = get_excel_df(f_abandoned) if f_abandoned and os.path.exists(f_abandoned) else pd.DataFrame()
@@ -265,11 +269,11 @@ if app_mode == "Player Word Doc Generator":
                                         return f"{name} ({club})"
                             return name
                         
-                        batting['Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-                        bowling['Bowler'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+                        batting['Name'] = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map)[0], axis=1)
+                        bowling['Bowler'] = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)[0], axis=1)
                         if not abandoned_df.empty:
                             ab_name_col = 'Name' if 'Name' in abandoned_df.columns else abandoned_df.columns[1]
-                            abandoned_df['Cleaned Name'] = abandoned_df.apply(lambda r: eng.cleanse_name_contextual(r[ab_name_col], r, alias_map, player_club_map), axis=1)
+                            abandoned_df['Cleaned Name'] = abandoned_df.apply(lambda r: eng.resolve_player_from_row(r, r[ab_name_col], id_map, alias_map, player_club_map)[0], axis=1)
                             ab_grp_col = 'Group' if 'Group' in abandoned_df.columns else ('Match' if 'Match' in abandoned_df.columns else abandoned_df.columns[0])
                             abandoned_df['Group'] = abandoned_df[ab_grp_col].apply(lambda x: eng.doc_format_cricket_names(x, domain))
 
@@ -296,6 +300,14 @@ if app_mode == "Player Word Doc Generator":
                             reg_matches = reg_players[reg_players['Full Name'].astype(str).str.contains(clean_q, case=False, na=False)]
                             target_official_names.update(reg_matches['Full Name'].dropna().astype(str).str.strip().tolist())
 
+                        if id_map_df is not None and not id_map_df.empty:
+                            if 'NV_Play_Name' in id_map_df.columns and 'Sport80_Name' in id_map_df.columns:
+                                id_matches = id_map_df[
+                                    id_map_df['NV_Play_Name'].astype(str).str.contains(clean_q, case=False, na=False) |
+                                    id_map_df['Sport80_Name'].astype(str).str.contains(clean_q, case=False, na=False)
+                                ]
+                                target_official_names.update(id_matches['Sport80_Name'].dropna().astype(str).str.strip().tolist())
+
                         bat_direct = batting[batting['Name'].astype(str).str.contains(clean_q, case=False, na=False)]['Name'].unique().tolist()
                         bowl_direct = bowling[bowling['Bowler'].astype(str).str.contains(clean_q, case=False, na=False)]['Bowler'].unique().tolist()
                         target_official_names.update(bat_direct + bowl_direct)
@@ -317,7 +329,13 @@ if app_mode == "Player Word Doc Generator":
                         found_batters = matched_batting['Name'].dropna().unique().tolist() if not matched_batting.empty else []
                         found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist() if not matched_bowling.empty else []
                         found_ab = matched_abandoned['Cleaned Name'].dropna().unique().tolist() if not matched_abandoned.empty else []
-                        raw_unique_players = list(set(found_batters + found_bowlers + found_ab))
+                        unique_dict = {}
+                        for p in (found_batters + found_bowlers + found_ab):
+                            p_str = str(p).strip()
+                            k = p_str.lower()
+                            if k not in unique_dict or ('Jnr' in p_str or 'Snr' in p_str):
+                                unique_dict[k] = p_str
+                        raw_unique_players = list(unique_dict.values())
                         
                         def player_sort_key(name):
                             pure_name = name.split(' (')[0].strip()
@@ -349,9 +367,11 @@ if app_mode == "Player Word Doc Generator":
                 else:
                     def get_club_for_player(name):
                         if '(' in name and ')' in name: return name.split('(')[-1].replace(')', '').strip()
-                        a_map = eng.build_alias_map(aliases_df, domain)
-                        mapped = a_map.get(name.lower(), name.lower())
-                        club = st.session_state.player_club_map.get(mapped.lower(), None)
+                        club = st.session_state.player_club_map.get(name.lower(), None)
+                        if not club or str(club).lower() in ['nan', 'none', '', 'unknown club']:
+                            a_map = eng.build_alias_map(aliases_df, domain)
+                            mapped = a_map.get(name.lower(), name.lower())
+                            club = st.session_state.player_club_map.get(mapped.lower(), None)
                         if club and str(club).lower() not in ['nan', 'none', '', 'unknown club']:
                             return str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
                         
@@ -375,9 +395,9 @@ if app_mode == "Player Word Doc Generator":
                         p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
                         st.success(f"Found Match: {format_player_display(active_player)}")
                         
-                        p_bat = matched_batting[matched_batting['Name'] == active_player]
-                        p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
-                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
+                        p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
+                        p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
+                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                         
                         league_df = get_excel_df(f_league)
                         cup_df = get_excel_df(f_cup)
@@ -398,9 +418,9 @@ if app_mode == "Player Word Doc Generator":
                                 active_player = selected_players[0]
                                 pure_registered_name = active_player.split(' (')[0].strip()
                                 p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
-                                p_bat = matched_batting[matched_batting['Name'] == active_player]
-                                p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
-                                p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
+                                p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
+                                p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
+                                p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                                 
                                 league_df = get_excel_df(f_league)
                                 cup_df = get_excel_df(f_cup)
@@ -417,9 +437,9 @@ if app_mode == "Player Word Doc Generator":
                                     for active_player in selected_players:
                                         pure = active_player.split(' (')[0].strip()
                                         p_aliases = eng.get_player_aliases(pure, aliases_df)
-                                        p_bat = matched_batting[matched_batting['Name'] == active_player]
-                                        p_bowl = matched_bowling[matched_bowling['Bowler'] == active_player]
-                                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'] == active_player] if not matched_abandoned.empty else pd.DataFrame()
+                                        p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
+                                        p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
+                                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                                         league_df = get_excel_df(f_league)
                                         cup_df = get_excel_df(f_cup)
                                         if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
@@ -456,6 +476,7 @@ elif app_mode == "Registration Checks":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"reg_check_reg_{domain}")
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"reg_check_alias_{domain}")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"reg_check_id_map_{domain}")
                 f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"reg_check_starring_{domain}")
                 f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"reg_check_cup_{domain}")
                 f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"reg_check_league_{domain}")
@@ -475,6 +496,7 @@ elif app_mode == "Registration Checks":
         st.subheader("Run Audit Engine")
         if st.button("🚀 Execute Security Audit", type="primary"):
             files_to_check = [f for f in [f_reg, f_alias, f_league, f_bat, f_bowl, f_cup] if f]
+            if f_id_map: files_to_check.append(f_id_map)
             if f_starring: files_to_check.append(f_starring)
             if f_abandoned: files_to_check.append(f_abandoned)
             if domain == "Men's" and include_irish:
@@ -493,9 +515,9 @@ elif app_mode == "Registration Checks":
                         end_ts = pd.to_datetime(end_date)
                         
                         if domain == "Men's" and include_irish:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                         else:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                         
                         try:
                             excel_io.seek(0)
@@ -519,14 +541,11 @@ elif app_mode == "Registration Checks":
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-#                                 with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, use_container_width=True, hide_index=True)
                             if deemed_count > 0:
-#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, use_container_width=True, hide_index=True)
                             if star_count > 0:
-#                                 with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, use_container_width=True, hide_index=True)
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -558,6 +577,7 @@ elif app_mode == "Midweek Registration & Starring Check":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=eng.DEFAULT_FILES["Midweek"]["reg"], key="mw_check_reg")
                 f_alias = st.text_input("Aliases Master (Excel)", value=eng.DEFAULT_FILES["Midweek"]["alias"], key="mw_check_alias")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=eng.DEFAULT_FILES["Midweek"].get("id_map", ""), key="mw_check_id_map")
                 f_starring = st.text_input("Men's Starring Master (Excel)", value=eng.DEFAULT_FILES["Men's"]["starring"], key="mw_check_starring")
                 f_weekend_league = st.text_input("Weekend League Structure (Excel)", value=eng.DEFAULT_FILES["Men's"]["league"], key="mw_check_wknd_league")
                 f_midweek_league = st.text_input("Midweek League Structure (Excel)", value=eng.DEFAULT_FILES["Midweek"]["league"], key="mw_check_mw_league")
@@ -568,6 +588,7 @@ elif app_mode == "Midweek Registration & Starring Check":
         st.subheader("Run Midweek Audit Engine")
         if st.button("🚀 Execute Midweek Audit", type="primary"):
             files_to_check = [f for f in [f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl] if f]
+            if f_id_map: files_to_check.append(f_id_map)
             if f_abandoned: files_to_check.append(f_abandoned)
             missing_files = [f for f in files_to_check if not os.path.exists(f)]
             
@@ -580,7 +601,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                     try:
                         start_ts = pd.to_datetime(start_date)
                         end_ts = pd.to_datetime(end_date)
-                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned)
+                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
                         
                         try:
                             excel_io.seek(0)
@@ -603,14 +624,11 @@ elif app_mode == "Midweek Registration & Starring Check":
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-#                                 with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, use_container_width=True, hide_index=True)
                             if deemed_count > 0:
-#                                 with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, use_container_width=True, hide_index=True)
                             if star_count > 0:
-#                                 with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
-                                pass
+                                with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, use_container_width=True, hide_index=True)
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -708,6 +726,7 @@ elif app_mode == "Club Fines Generator":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"fines_reg_{domain}")
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"fines_alias_{domain}")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"fines_id_map_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"fines_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"fines_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"fines_ab_{domain}")
@@ -742,10 +761,11 @@ elif app_mode == "Club Fines Generator":
         st.divider()
         if st.button("📄 Run Engine & Generate Fines Report", type="primary"):
             forfeit_path = f_forfeit if f_forfeit is not None else (default_forfeit_path if use_default_forfeit and os.path.exists(default_forfeit_path) else None)
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            if f_id_map: files_to_check.append(f_id_map)
             if f_abandoned: files_to_check.append(f_abandoned)
             if domain != "Midweek":
-                files_to_check.extend([f_starring, f_league])
+                files_to_check.extend([f_starring, f_league, f_cup])
                 if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
             else:
                 files_to_check.extend([f_starring, f_weekend_league, f_midweek_league])
@@ -763,11 +783,11 @@ elif app_mode == "Club Fines Generator":
                         
                         if domain != "Midweek":
                             if domain == "Men's" and include_irish:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                             else:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                         else:
-                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned)
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_club_fines_report(audit_excel_io, forfeit_path, start_ts, end_ts)
@@ -798,6 +818,7 @@ elif app_mode == "Unregistered Player Fines Generator":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"unreg_reg_{domain}")
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"unreg_alias_{domain}")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"unreg_id_map_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"unreg_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"unreg_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"unreg_ab_{domain}")
@@ -822,10 +843,11 @@ elif app_mode == "Unregistered Player Fines Generator":
         
         st.divider()
         if st.button("📄 Run Engine & Generate Unregistered Report", type="primary"):
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            if f_id_map: files_to_check.append(f_id_map)
             if f_abandoned: files_to_check.append(f_abandoned)
             if domain != "Midweek":
-                files_to_check.extend([f_starring, f_league])
+                files_to_check.extend([f_starring, f_league, f_cup])
                 if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
             else:
                 files_to_check.extend([f_starring, f_weekend_league, f_midweek_league])
@@ -843,11 +865,11 @@ elif app_mode == "Unregistered Player Fines Generator":
                         
                         if domain != "Midweek":
                             if domain == "Men's" and include_irish:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                             else:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
                         else:
-                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned)
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_unregistered_fines_only(audit_excel_io)

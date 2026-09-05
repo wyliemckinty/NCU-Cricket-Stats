@@ -361,6 +361,7 @@ if app_mode == "Bulk Averages Calculator":
         with st.expander("📂 File Path Configurations", expanded=False):
             f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"avg_reg_{domain}")
             f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"avg_alias_{domain}")
+            f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"avg_id_map_{domain}")
             f_unreg = st.text_input("Unregistered Players Map", value=c_files.get("unreg", ""), key=f"avg_unreg_{domain}")
             f_secondary = st.text_input("Secondary Team Map", value=c_files.get("secondary", ""), key=f"avg_sec_{domain}") 
             f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"avg_league_{domain}")
@@ -374,6 +375,7 @@ if app_mode == "Bulk Averages Calculator":
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Process Averages", type="primary"):
         files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl, f_cup]
+        if f_id_map: files_to_check.append(f_id_map)
         if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
             
         missing_files = [f for f in files_to_check if not os.path.exists(f)]
@@ -386,6 +388,8 @@ if app_mode == "Bulk Averages Calculator":
                     # Load datasets
                     reg_players = pd.read_excel(f_reg)
                     aliases = pd.read_excel(f_alias)
+                    id_map_df = pd.read_excel(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
+                    id_map = eng.build_id_map(id_map_df)
                     league_structure = pd.read_excel(f_league)
                     batting = pd.read_excel(f_bat)
                     bowling = pd.read_excel(f_bowl)
@@ -410,8 +414,13 @@ if app_mode == "Bulk Averages Calculator":
                     player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
                     player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
                     
-                    batting['Cleaned Name'] = batting.apply(lambda r: eng.cleanse_name_contextual(r['Name'], r, alias_map, player_club_map), axis=1)
-                    bowling['Cleaned Name'] = bowling.apply(lambda r: eng.cleanse_name_contextual(r['Bowler'], r, alias_map, player_club_map), axis=1)
+                    bat_res = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map), axis=1)
+                    batting['Cleaned Name'] = [res[0] for res in bat_res]
+                    batting['Sport80_ID'] = [res[1] for res in bat_res]
+
+                    bowl_res = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map), axis=1)
+                    bowling['Cleaned Name'] = [res[0] for res in bowl_res]
+                    bowling['Sport80_ID'] = [res[1] for res in bowl_res]
                     
                     batting_avgs, bowling_avgs = eng.calculate_averages(
                         batting, bowling, player_club_map, team_keys, league_dict, domain,
@@ -576,14 +585,17 @@ elif app_mode == "League Milestones Report":
             with st.expander("📁 File Path Configurations", expanded=False):
                 f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"ms_reg_{domain}")
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"ms_alias_{domain}")
+                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"ms_id_map_{domain}")
                 f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"ms_league_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"ms_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"ms_bowl_{domain}")
                 f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"ms_cup_{domain}")
+                f_secondary = st.text_input("Secondary Team Map (Excel)", value=c_files.get("secondary", "5. Secondary_Team_Map.xlsx"), key=f"ms_secondary_{domain}")
         
         st.divider()
         if st.button("📄 Generate Milestones Word Doc", type="primary"):
             files_to_check = [f_reg, f_alias, f_league, f_bat, f_bowl]
+            if f_id_map: files_to_check.append(f_id_map)
             missing_files = [f for f in files_to_check if not os.path.exists(f)]
             
             if missing_files:
@@ -591,7 +603,7 @@ elif app_mode == "League Milestones Report":
             else:
                 with st.spinner("Extracting milestones and building Word document..."):
                     try:
-                        doc_io = eng.generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup)
+                        doc_io = eng.generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup, f_id_map=f_id_map, f_secondary=f_secondary)
                         domain_label = "Open" if domain == "Men's" else "Women"
                         st.success("✅ Milestones report generated successfully!")
                         st.download_button(
