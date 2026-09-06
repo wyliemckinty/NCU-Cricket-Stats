@@ -360,6 +360,7 @@ if app_mode == "Player Word Doc Generator":
 
                         found_batters = matched_batting['Name'].dropna().unique().tolist() if not matched_batting.empty else []
                         found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist() if not matched_bowling.empty else []
+                        found_ab = matched_abandoned['Cleaned Name'].dropna().unique().tolist() if not matched_abandoned.empty else []
                         unique_dict = {}
                         for p in (found_batters + found_bowlers + found_ab):
                             p_str = str(p).strip()
