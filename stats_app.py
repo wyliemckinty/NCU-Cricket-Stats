@@ -146,7 +146,7 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
                 if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
                     target_sheet = sheet
                     break
-            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
 
             for _, row_data in cup_df.iterrows():
                 match_str_raw = str(row_data[0]).strip()
@@ -385,18 +385,18 @@ if app_mode == "Bulk Averages Calculator":
             with st.spinner(f"Running {domain} Averages Engine..."):
                 try:
                     
-                    # Load datasets
-                    reg_players = pd.read_excel(f_reg)
-                    aliases = pd.read_excel(f_alias)
-                    id_map_df = pd.read_excel(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
+                    # Load datasets using cached Excel loader
+                    reg_players = get_excel_df(f_reg)
+                    aliases = get_excel_df(f_alias)
+                    id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
                     id_map = eng.build_id_map(id_map_df)
-                    league_structure = pd.read_excel(f_league)
-                    batting = pd.read_excel(f_bat)
-                    bowling = pd.read_excel(f_bowl)
+                    league_structure = get_excel_df(f_league)
+                    batting = get_excel_df(f_bat)
+                    bowling = get_excel_df(f_bowl)
                     
                     if domain == "Men's" and include_irish:
-                        if os.path.exists(f_irish_bat): batting = pd.concat([batting, pd.read_excel(f_irish_bat)], ignore_index=True)
-                        if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, pd.read_excel(f_irish_bowl)], ignore_index=True)
+                        if os.path.exists(f_irish_bat): batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
+                        if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                     # --- ADD THIS MATCH FORMAT FILTER ---
                     if domain in ["Men's", "Women's"]:
@@ -405,8 +405,8 @@ if app_mode == "Bulk Averages Calculator":
                         )
                     # -----------------------------------
 
-                    unreg_df = pd.read_excel(f_unreg) if os.path.exists(f_unreg) else None
-                    sec_df = pd.read_excel(f_secondary) if os.path.exists(f_secondary) else None
+                    unreg_df = get_excel_df(f_unreg) if f_unreg and os.path.exists(f_unreg) else None
+                    sec_df = get_excel_df(f_secondary) if f_secondary and os.path.exists(f_secondary) else None
                     
                     alias_map = eng.build_alias_map(aliases, domain)
                     secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 

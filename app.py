@@ -67,6 +67,47 @@ def format_mail_link(email_str):
     text = str(email_str).strip()
     return f'<a href="mailto:{text}" style="text-decoration:none; font-weight:600; color:#0066cc;">✉️ {text}</a>'
 
+def get_tier_group(tier):
+    t = str(tier).lower()
+    if 'official' in t:
+        return (1, "🏛️ Club Officials")
+    if any(k in t for k in ["1st xi", "2nd xi", "3rd xi", "4th xi", "5th xi", "6th xi"]) and "women" not in t and "midweek" not in t:
+        return (2, "🏏 Senior Men's Teams")
+    if "women" in t:
+        return (3, "🏏 Women's Teams")
+    if "midweek" in t:
+        return (4, "🌙 Midweek Teams")
+    if any(k in t for k in ["youth", "boys", "girls", "coach"]):
+        return (5, "👶 Youth & Coaching")
+    if "indoor" in t:
+        return (6, "🎯 Indoor Cricket")
+    return (7, "📋 Other Roles")
+
+def render_contact_grid(df_items, num_cols=3):
+    """
+    Renders contact cards in row-by-row chunks of columns.
+    Ensures that when viewed on mobile/tablet devices, cards stack in exact
+    sequential order rather than unrolling column-by-column vertically.
+    """
+    if df_items.empty:
+        return
+    for i in range(0, len(df_items), num_cols):
+        batch = df_items.iloc[i : i + num_cols]
+        cols = st.columns(num_cols)
+        for c_idx, (_, row) in enumerate(batch.iterrows()):
+            with cols[c_idx]:
+                with st.container(border=True):
+                    role_title = row.get('Role', 'Club Official')
+                    official_name = row.get('Name', 'Not Listed')
+                    phone_val = row.get('Phone', '')
+                    email_val = row.get('Email', '')
+
+                    st.markdown(f"### {role_title}")
+                    st.markdown(f"**👤 {official_name}**")
+                    st.markdown(f"**Category:** `{row.get('Team Tier', 'General')}`")
+                    st.markdown(format_tel_link(phone_val), unsafe_allow_html=True)
+                    st.markdown(format_mail_link(email_val), unsafe_allow_html=True)
+
 # ==========================================
 # USER CONFIGURATIONS & PERSISTENCE
 # ==========================================
@@ -946,32 +987,27 @@ elif app_mode == "Club Contacts Directory":
                             st.markdown(f"**{g_label}:** {g_val}")
 
                 club_matches = df_contacts[df_contacts['Club'] == selected_club].sort_values(by='Role Order')
-                if selected_tier != "All Roles & Officials":
-                    filtered_view = club_matches[club_matches['Team Tier'] == selected_tier]
-                else:
-                    filtered_view = club_matches
-
                 st.divider()
                 st.subheader(f"📌 {selected_club} — {selected_tier}")
 
-                if filtered_view.empty:
-                    st.info(f"No contact records found for {selected_club} under {selected_tier}.")
+                if selected_tier != "All Roles & Officials":
+                    filtered_view = club_matches[club_matches['Team Tier'] == selected_tier]
+                    if filtered_view.empty:
+                        st.info(f"No contact records found for {selected_club} under {selected_tier}.")
+                    else:
+                        render_contact_grid(filtered_view.sort_values(by='Role Order'))
                 else:
-                    cols = st.columns(min(len(filtered_view), 3) if len(filtered_view) > 0 else 1)
-                    for idx, (_, row) in enumerate(filtered_view.iterrows()):
-                        target_col = cols[idx % len(cols)]
-                        with target_col:
-                            with st.container(border=True):
-                                role_title = row.get('Role', 'Club Official')
-                                official_name = row.get('Name', 'Not Listed')
-                                phone_val = row.get('Phone', '')
-                                email_val = row.get('Email', '')
+                    if club_matches.empty:
+                        st.info(f"No contact records found for {selected_club}.")
+                    else:
+                        matches_copy = club_matches.copy()
+                        matches_copy['Group Order'] = matches_copy['Team Tier'].apply(lambda x: get_tier_group(x)[0])
+                        matches_copy['Group Name'] = matches_copy['Team Tier'].apply(lambda x: get_tier_group(x)[1])
 
-                                st.markdown(f"### {role_title}")
-                                st.markdown(f"**👤 {official_name}**")
-                                st.markdown(f"**Category:** `{row.get('Team Tier', 'General')}`")
-                                st.markdown(format_tel_link(phone_val), unsafe_allow_html=True)
-                                st.markdown(format_mail_link(email_val), unsafe_allow_html=True)
+                        for (grp_order, grp_name), grp_df in matches_copy.groupby(['Group Order', 'Group Name'], sort=True):
+                            st.markdown(f"#### {grp_name}")
+                            render_contact_grid(grp_df.sort_values(by='Role Order'))
+                            st.markdown("<br>", unsafe_allow_html=True)
 
         # ----------------------------------------------------
         # TAB 2: ROLE-SPECIFIC UNION-WIDE VIEWS

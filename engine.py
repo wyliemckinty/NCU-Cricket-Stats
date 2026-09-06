@@ -550,8 +550,12 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
                 
                 if p_name and p_name != 'nan':
                     mapped_name = alias_map.get(p_name, p_name)
-                    club_map[mapped_name] = p_club
-                    club_map[p_name] = p_club
+                    for key in [mapped_name, p_name]:
+                        if key in club_map:
+                            if p_club.lower() not in club_map[key].lower():
+                                club_map[key] = f"{club_map[key]} / {p_club}"
+                        else:
+                            club_map[key] = p_club
 
     if id_map_df is None and domain:
         f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
@@ -573,7 +577,6 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
                     name_val = r.get(name_c)
                     if pd.notna(name_val) and str(name_val).strip() and str(name_val).lower() != 'nan':
                         p_name = str(name_val).strip().lower()
-                        mapped_name = alias_map.get(p_name, p_name)
                         if mapped_name not in club_map:
                             club_map[mapped_name] = club_str
                         if p_name not in club_map:
