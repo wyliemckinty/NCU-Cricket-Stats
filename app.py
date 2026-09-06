@@ -1088,16 +1088,33 @@ elif app_mode == "Registration Fee Audit":
                 try:
                     audit_file, timestamped_filename, df_summary, _ = eng.run_registration_fee_audit()
                     st.session_state['audit_outputs'] = (audit_file, timestamped_filename)
+                    
+                    # Save physical copies directly to "Output Files"
+                    output_dir = "Output Files"
+                    os.makedirs(output_dir, exist_ok=True)
+                    date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
+                    excel_path = os.path.join(output_dir, f"NCU_Registration_Fee_Audit_{date_str}.xlsx")
+                    docx_path = os.path.join(output_dir, f"NCU_Revenue_Anomalies_Report_{date_str}.docx")
+                    
+                    with open(excel_path, "wb") as f_out:
+                        f_out.write(audit_file.getvalue())
+                    with open(docx_path, "wb") as f_out:
+                        f_out.write(timestamped_filename.getvalue())
+                    
+                    st.session_state['saved_paths'] = (excel_path, docx_path)
                 except Exception as e:
                     st.error(f"❌ Error during audit: {str(e)}")
         
         if 'audit_outputs' in st.session_state:
             excel_io, doc_io = st.session_state['audit_outputs']
-            st.success(f"✅ Audit complete! Your reports are ready to download below.")
+            st.success("✅ Audit complete! Your reports are ready to download below.")
+            
+            if 'saved_paths' in st.session_state:
+                p_excel, p_docx = st.session_state['saved_paths']
+                st.info(f"📁 **Files also saved directly to:**\n- `{p_excel}`\n- `{p_docx}`")
             
             zip_buffer = io.BytesIO()
             with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                # Need timestamp for filename inside zip
                 date_str = datetime.now().strftime('%Y%m%d_%H%M%S')
                 zip_file.writestr(f"NCU_Registration_Fee_Audit_{date_str}.xlsx", excel_io.getvalue())
                 zip_file.writestr(f"NCU_Revenue_Anomalies_Report_{date_str}.docx", doc_io.getvalue())
