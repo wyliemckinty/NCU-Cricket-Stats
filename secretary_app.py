@@ -342,6 +342,7 @@ if app_mode == "Player Word Doc Generator":
                         st.session_state.reg_players = reg_players
                         st.session_state.aliases_df = aliases
                         st.session_state.player_club_map = player_club_map
+                        st.session_state.id_map_df = id_map_df
                         st.session_state.data_loaded = True
 
                 matched_batting = st.session_state.matched_batting
@@ -350,6 +351,7 @@ if app_mode == "Player Word Doc Generator":
                 unique_players = st.session_state.unique_players
                 reg_players = st.session_state.reg_players
                 aliases_df = st.session_state.aliases_df
+                id_map_df = st.session_state.get('id_map_df', None)
 
                 if matched_batting.empty and matched_bowling.empty and matched_abandoned.empty:
                     st.error(f"No statistics found for '{current_query}'. Please try another name.")
@@ -374,21 +376,23 @@ if app_mode == "Player Word Doc Generator":
                     def format_player_display(name):
                         pure = name.split(' (')[0].strip()
                         club_clean = get_club_for_player(name)
-                        p_aliases = eng.get_player_aliases(pure, aliases_df)
-                        if p_aliases: return f"{pure} / {' / '.join(p_aliases)} ({club_clean})"
-                        return f"{pure} ({club_clean})"
+                        playing_name = eng.get_player_playing_name(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
+                        if club_clean and str(club_clean).lower() not in ['unknown club', 'nan', 'none', '']:
+                            return f"{playing_name} ({club_clean})"
+                        return playing_name
 
                     if len(unique_players) == 1:
                         active_player = unique_players[0]
                         pure_registered_name = active_player.split(' (')[0].strip()
-                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                        club_clean = get_club_for_player(active_player)
+                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                         st.success(f"Found Match: {format_player_display(active_player)}")
                         
                         p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
                         p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                         
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df)
                         st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
@@ -399,23 +403,25 @@ if app_mode == "Player Word Doc Generator":
                             if len(selected_players) == 1:
                                 active_player = selected_players[0]
                                 pure_registered_name = active_player.split(' (')[0].strip()
-                                p_aliases = eng.get_player_aliases(pure_registered_name, aliases_df)
+                                club_clean = get_club_for_player(active_player)
+                                p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                                 p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
                                 p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                                 p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                                 
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df)
                                 st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
                             else:
                                 zip_buffer = io.BytesIO()
                                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                                     for active_player in selected_players:
                                         pure = active_player.split(' (')[0].strip()
-                                        p_aliases = eng.get_player_aliases(pure, aliases_df)
+                                        club_clean = get_club_for_player(active_player)
+                                        p_aliases = eng.get_player_aliases(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                                         p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
                                         p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab)
+                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df)
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
