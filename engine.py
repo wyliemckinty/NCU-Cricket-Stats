@@ -268,9 +268,11 @@ def build_dynamic_duplicate_map(id_map_df=None, reg_players_df=None):
         col_s80_name = next((c for c in id_map_df.columns if 'sport80_name' in str(c).lower()), None)
         col_s80_club = next((c for c in id_map_df.columns if 'sport80_club' in str(c).lower()), None)
         col_s80_id = next((c for c in id_map_df.columns if 'sport80_id' in str(c).lower()), None)
+        col_nv_name = next((c for c in id_map_df.columns if 'nv' in str(c).lower() and 'name' in str(c).lower()), None)
+        
+        df_copy = id_map_df.copy()
         
         if col_s80_name:
-            df_copy = id_map_df.copy()
             df_copy['Norm_Name'] = df_copy[col_s80_name].fillna('').astype(str).str.strip().apply(fix_celtic_casing)
             
             for name, group in df_copy.groupby('Norm_Name'):
@@ -284,6 +286,34 @@ def build_dynamic_duplicate_map(id_map_df=None, reg_players_df=None):
                     existing.update(unique_clubs)
                     if existing:
                         dup_map[name] = sorted(list(existing))
+
+        if col_nv_name:
+            df_copy['Norm_NV_Name'] = df_copy[col_nv_name].fillna('').astype(str).str.strip().apply(fix_celtic_casing)
+            
+            for name, group in df_copy.groupby('Norm_NV_Name'):
+                if not name or str(name).lower() in ['nan', 'none', '']: continue
+                unique_ids = set(str(x).replace('.0','').strip() for x in group[col_s80_id].dropna() if str(x).strip() and str(x).lower() != 'nan') if col_s80_id else set()
+                raw_clubs = set(extract_base_club_name(c) for c in group[col_s80_club].dropna() if str(c).strip() and str(c).lower() != 'nan') if col_s80_club else set()
+                unique_clubs = {c for c in raw_clubs if c.lower() not in ignored_clubs}
+                
+                if len(unique_ids) > 1 or len(unique_clubs) > 1:
+                    existing = set(dup_map.get(name, []))
+                    existing.update(unique_clubs)
+                    if existing:
+                        dup_map[name] = sorted(list(existing))
+                        dup_map[name.title()] = sorted(list(existing))
+                        dup_map[fix_celtic_casing(name)] = sorted(list(existing))
+                    
+                    # Also link each associated registered Sport80 name for this scorecard duplicate
+                    if col_s80_name:
+                        for s80_n in group[col_s80_name].dropna().unique():
+                            norm_s80 = fix_celtic_casing(str(s80_n).strip())
+                            if norm_s80 and norm_s80.lower() not in ['nan', 'none', '']:
+                                s80_exist = set(dup_map.get(norm_s80, []))
+                                s80_exist.update(unique_clubs)
+                                if s80_exist:
+                                    dup_map[norm_s80] = sorted(list(s80_exist))
+                                    dup_map[norm_s80.title()] = sorted(list(s80_exist))
 
     # Also add standard-cased keys for casing compatibility
     for name, clubs in list(dup_map.items()):
@@ -411,16 +441,20 @@ def resolve_player_from_row(row, raw_name, id_map, alias_map, player_club_map=No
         sport80_club = info.get('sport80_club', '')
         raw_canonical = info.get('sport80_name') or info.get('nv_play_name') or clean_input_name
         canonical_name = fix_celtic_casing(raw_canonical)
+        nv_name = fix_celtic_casing(str(info.get('nv_play_name', '')))
         
-        # Apply alias mapping if present
-        if alias_map:
-            if canonical_name.lower() in alias_map:
-                canonical_name = alias_map[canonical_name.lower()]
-            elif clean_input_name.lower() in alias_map:
-                canonical_name = alias_map[clean_input_name.lower()]
+        # Apply alias mapping only if it fixes a registered name typo (e.g. Will Noffkee -> Will Noffke)
+        # Never let an alias override a valid registered player from another club
+        if alias_map and canonical_name.lower() in alias_map:
+            mapped_alias = alias_map[canonical_name.lower()]
+            mapped_clubs = KNOWN_DUPLICATES.get(mapped_alias, [])
+            this_club = extract_base_club_name(sport80_club).lower() if sport80_club else ''
+            if not mapped_clubs or any(c.lower() in this_club for c in mapped_clubs):
+                canonical_name = mapped_alias
         
         # Format name with club if in KNOWN_DUPLICATES
-        if canonical_name in KNOWN_DUPLICATES and sport80_club:
+        is_dup = (canonical_name in KNOWN_DUPLICATES) or (nv_name in KNOWN_DUPLICATES) or (clean_input_name in KNOWN_DUPLICATES)
+        if is_dup and sport80_club:
             short_club = extract_base_club_name(sport80_club)
             cleaned_name = f"{canonical_name} ({short_club})"
         else:
@@ -452,12 +486,15 @@ def resolve_player_from_row(row, raw_name, id_map, alias_map, player_club_map=No
             sport80_club = info.get('sport80_club', '')
             raw_canonical = info.get('sport80_name') or info.get('nv_play_name') or clean_input_name
             canonical_name = fix_celtic_casing(raw_canonical)
-            if alias_map:
-                if canonical_name.lower() in alias_map:
-                    canonical_name = alias_map[canonical_name.lower()]
-                elif clean_input_name.lower() in alias_map:
-                    canonical_name = alias_map[clean_input_name.lower()]
-            if canonical_name in KNOWN_DUPLICATES and sport80_club:
+            nv_name = fix_celtic_casing(str(info.get('nv_play_name', '')))
+            if alias_map and canonical_name.lower() in alias_map:
+                mapped_alias = alias_map[canonical_name.lower()]
+                mapped_clubs = KNOWN_DUPLICATES.get(mapped_alias, [])
+                this_club = extract_base_club_name(sport80_club).lower() if sport80_club else ''
+                if not mapped_clubs or any(c.lower() in this_club for c in mapped_clubs):
+                    canonical_name = mapped_alias
+            is_dup = (canonical_name in KNOWN_DUPLICATES) or (nv_name in KNOWN_DUPLICATES) or (clean_input_name in KNOWN_DUPLICATES)
+            if is_dup and sport80_club:
                 short_club = extract_base_club_name(sport80_club)
                 cleaned_name = f"{canonical_name} ({short_club})"
             else:
@@ -631,8 +668,9 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
                     name_val = r.get(name_c)
                     if pd.notna(name_val) and str(name_val).strip() and str(name_val).lower() != 'nan':
                         p_name = str(name_val).strip().lower()
-                        if mapped_name not in club_map:
-                            club_map[mapped_name] = club_str
+                        m_name = alias_map.get(p_name, p_name).lower() if alias_map else p_name
+                        if m_name not in club_map:
+                            club_map[m_name] = club_str
                         if p_name not in club_map:
                             club_map[p_name] = club_str
 
@@ -1647,6 +1685,54 @@ def get_player_playing_name(official_name, aliases=None, id_map_df=None, club=No
     if not official_name:
         return ""
     pure = str(official_name).split(' (')[0].strip()
+    pure_lower = pure.lower()
+
+    if id_map_df is None or (isinstance(id_map_df, pd.DataFrame) and id_map_df.empty):
+        for candidate_id_file in ['NCU_Mens_Master_ID_Mapping.xlsx', 'NCU_Master_ID_Mapping.xlsx']:
+            if os.path.exists(candidate_id_file):
+                try:
+                    id_map_df = get_excel_df(candidate_id_file)
+                    break
+                except Exception:
+                    pass
+
+    # 1. Check if pure is ALREADY a known NV Play playing name in id_map_df
+    if id_map_df is not None and isinstance(id_map_df, pd.DataFrame) and not id_map_df.empty:
+        if 'NV_Play_Name' in id_map_df.columns:
+            m_nv = id_map_df[id_map_df['NV_Play_Name'].astype(str).str.strip().str.lower() == pure_lower]
+            if not m_nv.empty:
+                if club and 'Sport80_Club' in m_nv.columns:
+                    c_clean = str(club).lower().replace('cricket club', '').replace('cc', '').strip()
+                    club_m = m_nv[m_nv['Sport80_Club'].astype(str).str.lower().str.contains(c_clean, na=False)]
+                    if not club_m.empty:
+                        m_nv = club_m
+                val = m_nv['NV_Play_Name'].dropna().iloc[0]
+                return str(val).strip()
+
+        # 2. Check if pure is a Sport80 registered name in id_map_df -> return NV_Play_Name
+        if 'Sport80_Name' in id_map_df.columns and 'NV_Play_Name' in id_map_df.columns:
+            m_s80 = id_map_df[id_map_df['Sport80_Name'].astype(str).str.strip().str.lower() == pure_lower]
+            if not m_s80.empty:
+                if club and 'Sport80_Club' in m_s80.columns:
+                    c_clean = str(club).lower().replace('cricket club', '').replace('cc', '').strip()
+                    club_m = m_s80[m_s80['Sport80_Club'].astype(str).str.lower().str.contains(c_clean, na=False)]
+                    if not club_m.empty:
+                        m_s80 = club_m
+                for nv_name in m_s80['NV_Play_Name'].dropna().unique():
+                    nv_clean = str(nv_name).strip()
+                    if nv_clean and nv_clean.lower() != 'nan':
+                        return nv_clean
+
+    # 3. Check aliases dataframe:
+    # If pure is in Input Name (Scorecard/Stats), pure is already the scorecard playing name
+    if aliases is not None and isinstance(aliases, pd.DataFrame) and not aliases.empty:
+        if 'Input Name (Scorecard/Stats)' in aliases.columns:
+            m_inp = aliases[aliases['Input Name (Scorecard/Stats)'].astype(str).str.strip().str.lower() == pure_lower]
+            if not m_inp.empty:
+                val = m_inp['Input Name (Scorecard/Stats)'].dropna().iloc[0]
+                return str(val).replace('‡', '').strip()
+
+    # 4. Fall back to finding scorecard alias from official registered name
     aliases_list = get_player_aliases(pure, aliases=aliases, id_map_df=id_map_df, club=club)
     if aliases_list:
         return aliases_list[0]
@@ -1951,10 +2037,7 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     else:
         header_club_name = re.sub(r'(?i)\s*cricket club', '', club_name_clean).strip()
     if not playing_name:
-        if aliases_list:
-            playing_name = aliases_list[0]
-        else:
-            playing_name = get_player_playing_name(active_player, id_map_df=id_map_df, club=club_name_clean)
+        playing_name = get_player_playing_name(active_player, id_map_df=id_map_df, club=club_name_clean)
             
     domain_label = "Open" if domain == "Men's" else ("Women" if domain == "Women's" else "Midweek")
     heading_title = f"{playing_name} - {header_club_name} - Season Summary ({domain_label})\n"
