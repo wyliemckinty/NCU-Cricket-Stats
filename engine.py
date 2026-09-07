@@ -899,6 +899,74 @@ def format_display_team(team_str, domain):
         return "NCU Pathway XI"
     return c
 
+_INTRA_CLUB_MAP_CACHE = None
+
+def build_intra_club_team_map(search_dir=None):
+    global _INTRA_CLUB_MAP_CACHE
+    import glob
+    intra_map = {}
+    
+    dirs_to_check = []
+    if search_dir:
+        dirs_to_check.append(search_dir)
+    else:
+        dirs_to_check.append(os.getcwd())
+        try:
+            engine_dir = os.path.dirname(os.path.abspath(__file__))
+            if engine_dir not in dirs_to_check:
+                dirs_to_check.append(engine_dir)
+        except Exception:
+            pass
+            
+    files = []
+    for d in dirs_to_check:
+        files.extend(glob.glob(os.path.join(d, '*stats-group-by-team.csv')))
+        files.extend(glob.glob(os.path.join(d, 'Intra Club Team Match Info', '*stats-group-by-team.csv')))
+        files.extend(glob.glob(os.path.join(d, '**', '*stats-group-by-team.csv'), recursive=True))
+    files = sorted(list(set(files)))
+    
+    for f in files:
+        try:
+            df = pd.read_csv(f)
+            teams = sorted(list(df['Group'].dropna().unique()))
+            if len(teams) != 2:
+                continue
+            fname = os.path.basename(f)
+            dm = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)', fname, re.IGNORECASE)
+            date_key = f"{dm.group(1)} {dm.group(2)[:3].lower()}" if dm else None
+            
+            id_col = 'Batter ID' if 'Batter ID' in df.columns else ('Bowler ID' if 'Bowler ID' in df.columns else None)
+            name_col = 'Name' if 'Name' in df.columns else ('Bowler' if 'Bowler' in df.columns else None)
+            
+            t_key = f"{teams[0].lower().strip()}__{teams[1].lower().strip()}"
+            for _, r in df.iterrows():
+                team = str(r['Group']).strip()
+                p_id = str(r[id_col]).strip() if id_col and pd.notna(r[id_col]) else None
+                p_name = str(r[name_col]).strip().lower() if name_col and pd.notna(r[name_col]) else None
+                
+                if date_key:
+                    if p_id:
+                        intra_map[(t_key, date_key, p_id)] = team
+                        intra_map[(date_key, p_id)] = team
+                    if p_name:
+                        intra_map[(t_key, date_key, p_name)] = team
+                        intra_map[(date_key, p_name)] = team
+                if p_id:
+                    intra_map[(t_key, p_id)] = team
+                if p_name:
+                    intra_map[(t_key, p_name)] = team
+        except Exception:
+            continue
+            
+    _INTRA_CLUB_MAP_CACHE = intra_map
+    return intra_map
+
+def get_cached_intra_club_map(search_dir=None):
+    global _INTRA_CLUB_MAP_CACHE
+    if _INTRA_CLUB_MAP_CACHE is None:
+        _INTRA_CLUB_MAP_CACHE = build_intra_club_team_map(search_dir)
+    return _INTRA_CLUB_MAP_CACHE
+
 def extract_teams_from_group(group_str):
     try:
         parts = str(group_str).strip().rsplit(' - ', 1)
@@ -910,12 +978,33 @@ def extract_teams_from_group(group_str):
         return rest, "Unknown"
     except: return "Unknown", "Unknown"
 
-def determine_player_team_for_row(row, player_club_map, domain, secondary_map=None, player_fixture_clubs=None, alias_map=None):
+def determine_player_team_for_row(row, player_club_map, domain, secondary_map=None, player_fixture_clubs=None, alias_map=None, intra_team_map=None):
     player = str(row.get('Cleaned Name', row.get('Player', row.get('Name', row.get('Bowler', ''))))).strip()
     group_str = str(row.get('Group', row.get('Match', '')))
     t1, t2 = extract_teams_from_group(group_str)
     if not t1 or t1 == "Unknown" or not t2 or t2 == "Unknown":
         return f"Unknown ({t1} v {t2})"
+
+    # 0. Check intra-club match team mapping (from group-by-team CSVs)
+    if intra_team_map is None:
+        intra_team_map = get_cached_intra_club_map()
+    if intra_team_map:
+        teams = sorted([t1.lower().strip(), t2.lower().strip()])
+        t_key = f"{teams[0]}__{teams[1]}"
+        dm = re.search(r'(\d{1,2})(?:st|nd|rd|th)?\s+(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)', group_str, re.IGNORECASE)
+        date_key = f"{dm.group(1)} {dm.group(2)[:3].lower()}" if dm else None
+        
+        p_id = str(row.get('Batter ID', row.get('Bowler ID', row.get('Sport80_ID', '')))).strip()
+        p_name = str(row.get('Cleaned Name', row.get('Player', row.get('Name', row.get('Bowler', ''))))).strip().lower()
+        
+        res = None
+        if date_key:
+            res = (intra_team_map.get((t_key, date_key, p_id)) or intra_team_map.get((t_key, date_key, p_name)) or
+                   intra_team_map.get((date_key, p_id)) or intra_team_map.get((date_key, p_name)))
+        if not res:
+            res = intra_team_map.get((t_key, p_id)) or intra_team_map.get((t_key, p_name))
+        if res:
+            return res
 
     c1_base = extract_base_club_name(t1).lower()
     c2_base = extract_base_club_name(t2).lower()
@@ -939,6 +1028,7 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
             if 'holywood' in t1.lower() or 'holywood' in t2.lower(): return t1 if 'holywood' in t1.lower() else t2
             elif 'saintfield' in t1.lower() or 'saintfield' in t2.lower(): return t1 if 'saintfield' in t1.lower() else t2
 
+    registered_clubs = set()
     known_clubs = set()
     
     # 1. Registered / Transferred Clubs
@@ -947,6 +1037,7 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
         for chunk in str(reg_val).split('/'):
             c_clean = extract_base_club_name(chunk).lower()
             if c_clean and c_clean != 'unknown club':
+                registered_clubs.add(c_clean)
                 known_clubs.add(c_clean)
 
     # 2. Secondary Map
@@ -955,6 +1046,7 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
         for st in sec_teams:
             c_clean = extract_base_club_name(st).lower()
             if c_clean and c_clean != 'unknown club':
+                registered_clubs.add(c_clean)
                 known_clubs.add(c_clean)
 
     # 3. Fixture Appearance Frequency (>= 2 matches)
@@ -1007,6 +1099,14 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
     elif t2_matches and not t1_matches:
         return t2
     elif t1_matches and t2_matches:
+        # PRIORITY: Official registered/secondary club takes precedence over inferred fixture clubs!
+        t1_reg = any(club_matches_team_base(rc, t1) for rc in registered_clubs)
+        t2_reg = any(club_matches_team_base(rc, t2) for rc in registered_clubs)
+        if t1_reg and not t2_reg:
+            return t1
+        elif t2_reg and not t1_reg:
+            return t2
+
         if t1_exact and not t2_exact: return t1
         if t2_exact and not t1_exact: return t2
         c1_cnt = counts.get(c1_base, 0)
@@ -1047,7 +1147,7 @@ def parse_high_score(scores_series):
     if best_score == 0 and not is_not_out: return "0"
     return f"{best_score}*" if is_not_out else str(best_score)
 
-def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, league_dict, domain, bat_sort="Runs", bowl_sort="Wickets", secondary_map=None, alias_map=None, _cache_version=None):
+def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, league_dict, domain, bat_sort="Runs", bowl_sort="Wickets", secondary_map=None, alias_map=None, _cache_version=None, intra_team_map=None):
     for col in ['Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes', 'Catches', 'Catches as Keeper', 'Stumpings']:
         if col in batting_df.columns: batting_df[col] = pd.to_numeric(batting_df[col], errors='coerce').fillna(0)
     for col in ['Innings', 'Balls', 'Maidens', 'Runs', 'Wickets']:
@@ -1060,8 +1160,11 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
             
     player_fixture_clubs = build_player_fixture_club_counts(batting_df, bowling_df, alias_map=alias_map)
     
-    batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
-    bowling_df['Team Played For'] = bowling_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map), axis=1)
+    if intra_team_map is None:
+        intra_team_map = get_cached_intra_club_map()
+
+    batting_df['Team Played For'] = batting_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map, intra_team_map=intra_team_map), axis=1)
+    bowling_df['Team Played For'] = bowling_df.apply(lambda r: determine_player_team_for_row(r, player_club_map, domain, secondary_map, player_fixture_clubs=player_fixture_clubs, alias_map=alias_map, intra_team_map=intra_team_map), axis=1)
     
     def get_opponent_from_row(row):
         group_str = str(row.get('Group', row.get('Match', '')))
@@ -1231,24 +1334,30 @@ def format_excel_sheet(writer, df, sheet_name, min_label=None):
     worksheet = writer.sheets[safe_sheet_name]
     workbook = writer.book
     
-    left_header = workbook.add_format({'bold': True, 'bottom': 1, 'bg_color': '#D9D9D9', 'align': 'left'})
-    center_header = workbook.add_format({'bold': True, 'bottom': 1, 'bg_color': '#D9D9D9', 'align': 'center'})
+    # Freeze panes at row 2 so the header row remains visible
+    worksheet.freeze_panes(1, 0)
+    
+    left_header = workbook.add_format({'bold': True, 'bottom': 1, 'bg_color': '#FFFFE0', 'align': 'left'})
+    center_header = workbook.add_format({'bold': True, 'bottom': 1, 'bg_color': '#FFFFE0', 'align': 'center'})
     bold_name, left_align, center_align = workbook.add_format({'bold': True}), workbook.add_format({'align': 'left'}), workbook.add_format({'align': 'center'})
     two_decimals = workbook.add_format({'num_format': '0.00', 'align': 'center'})
+    text_format = workbook.add_format({'num_format': '@', 'align': 'center'})
     
     for col_num, col_name in enumerate(df.columns):
-        worksheet.write(0, col_num, col_name, left_header if col_name in ['Player', 'Team', 'High Score Against', 'Best Bowling Against'] else center_header)
+        worksheet.write(0, col_num, col_name, left_header if col_name in ['Player', 'Team', 'Name', 'Club', 'High Score Against', 'Best Bowling Against'] else center_header)
         
-        # Calculate optimal width
-        col_width = max(max((len(str(x)) for x in df[col_name]), default=0), len(str(col_name))) + 2
+        # Calculate optimal width: max of widest entry and header + 2 padding, minimum 10
+        max_data_len = max((len(str(x)) for x in df[col_name]), default=0)
+        col_width = max(max_data_len + 2, len(str(col_name)) + 2, 10)
         
-        if col_name == 'Player': 
+        if col_name in ['Player', 'Name']: 
             worksheet.set_column(col_num, col_num, col_width, bold_name)
-        elif col_name in ['Team', 'High Score Against', 'Best Bowling Against']: 
+        elif col_name in ['Team', 'Club', 'High Score Against', 'Best Bowling Against']: 
             worksheet.set_column(col_num, col_num, col_width, left_align)
         elif col_name in ['Average', 'Strike Rate', 'Economy']: 
-            # Reduce width for these specific columns as requested
-            worksheet.set_column(col_num, col_num, len(str(col_name)) + 0.5, two_decimals)
+            worksheet.set_column(col_num, col_num, col_width, two_decimals)
+        elif col_name in ['Best Bowling', 'High Score']:
+            worksheet.set_column(col_num, col_num, col_width, text_format)
         else: 
             worksheet.set_column(col_num, col_num, col_width, center_align)
             

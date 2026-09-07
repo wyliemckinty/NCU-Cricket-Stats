@@ -422,10 +422,13 @@ if app_mode == "Bulk Averages Calculator":
                     bowling['Cleaned Name'] = [res[0] for res in bowl_res]
                     bowling['Sport80_ID'] = [res[1] for res in bowl_res]
                     
+                    intra_team_map = eng.build_intra_club_team_map()
+                    
                     batting_avgs, bowling_avgs = eng.calculate_averages(
                         batting, bowling, player_club_map, team_keys, league_dict, domain,
                         bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map,
-                        alias_map=alias_map, _cache_version=datetime.now().timestamp()
+                        alias_map=alias_map, _cache_version=datetime.now().timestamp(),
+                        intra_team_map=intra_team_map
                     )                   
                     display_league_order = []
                     for raw_league in original_league_order:
