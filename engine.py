@@ -888,6 +888,8 @@ def format_display_team(team_str, domain):
     c = c.replace(' 4th XI', ' 4').replace(' 5th XI', ' 5').replace(' 6th XI', ' 6')
     c = c.replace(' XI', '')
     c = re.sub(r'\s+', ' ', c).strip()
+    # Normalise ordinal suffixes: "4ths" → "4", "3rds" → "3", "2nds" → "2", "1sts" → "1"
+    c = re.sub(r'\b(\d+)(ths?|rds?|nds?|sts?)\b', r'\1', c)
     if domain != "Midweek" and c.endswith(' 1'):
         c = c[:-2].strip()
     if 'Holywood' in c and '1881' not in c:
@@ -1195,6 +1197,10 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
     batting_df['League'] = batting_df['Team Played For'].apply(apply_league)
     bowling_df['League'] = bowling_df['Team Played For'].apply(apply_league)
 
+    # Pre-normalise team names to display form so groupby keys are clean (e.g. "Lurgan 4ths" → "Lurgan 4")
+    batting_df['Team Played For'] = batting_df['Team Played For'].apply(lambda t: format_display_team(t, domain))
+    bowling_df['Team Played For'] = bowling_df['Team Played For'].apply(lambda t: format_display_team(t, domain))
+
     def combine_teams(team_series, domain):
         if team_series.empty: return "Unknown"
         teams = []
@@ -1204,10 +1210,102 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
                 teams.append(fmt)
         return " / ".join(teams) if teams else "Unknown"
 
+    def _base_club(team_str):
+        """Strip trailing XI number: 'Belfast Superkings 2' → 'Belfast Superkings'."""
+        return re.sub(r'\s+\d+$', '', str(team_str).strip())
+
+    def merge_cross_club_batting(df):
+        """
+        Post-process per-team batting rows:
+        - Same base club (e.g. BSK 2 + BSK 3) → keep SEPARATE rows
+        - Different base clubs (e.g. Instonians + Lisburn transfer) → MERGE into one row
+        """
+        result = []
+        sum_cols = ['Matches', 'Innings', 'Not Outs', 'Runs', 'Balls', 'Fours', 'Sixes',
+                    'Catches', 'Catches as Keeper', 'Stumpings']
+
+        def score_val(s):
+            sv = str(s).replace('*', '').replace('.0', '')
+            return int(sv) if sv.isdigit() else 0
+
+        for (league, player), group in df.groupby(['League', 'Player'], sort=False):
+            if len(group) == 1:
+                result.append(group.iloc[0].to_dict())
+                continue
+            base_clubs = set(_base_club(t) for t in group['Team'])
+            if len(base_clubs) == 1:
+                # Same base club, different XIs → keep separate
+                for _, row in group.iterrows():
+                    result.append(row.to_dict())
+            else:
+                # Different clubs → merge
+                merged = group.iloc[0].to_dict()
+                merged['Team'] = ' / '.join(sorted(group['Team'].unique()))
+                for col in sum_cols:
+                    if col in group.columns:
+                        merged[col] = group[col].sum()
+                # Best high score
+                best_idx = group['High Score'].apply(score_val).idxmax()
+                merged['High Score'] = group.loc[best_idx, 'High Score']
+                merged['High Score Against'] = group.loc[best_idx, 'High Score Against'] if 'High Score Against' in group.columns else 'Unknown'
+                # Recalculate derived stats
+                outs = merged['Innings'] - merged['Not Outs']
+                merged['Average'] = (merged['Runs'] / outs) if outs > 0 else float('nan')
+                merged['Strike Rate'] = ((merged['Runs'] / merged['Balls']) * 100) if merged['Balls'] > 0 else float('nan')
+                result.append(merged)
+
+        return pd.DataFrame(result).reset_index(drop=True)
+
+    def merge_cross_club_bowling(df):
+        """
+        Post-process per-team bowling rows:
+        - Same base club (e.g. BSK 2 + BSK 3) → keep SEPARATE rows
+        - Different base clubs (transfer/pathway) → MERGE into one row
+        """
+        result = []
+        sum_cols = ['Matches', 'Innings', 'Balls', 'Maidens', 'Runs', 'Wickets']
+
+        def bb_sort_key(s):
+            parts = str(s).split('-')
+            try:
+                return (int(parts[0]), -int(parts[1])) if len(parts) == 2 else (0, 0)
+            except (ValueError, IndexError):
+                return (0, 0)
+
+        for (league, player), group in df.groupby(['League', 'Player'], sort=False):
+            if len(group) == 1:
+                result.append(group.iloc[0].to_dict())
+                continue
+            base_clubs = set(_base_club(t) for t in group['Team'])
+            if len(base_clubs) == 1:
+                # Same base club, different XIs → keep separate
+                for _, row in group.iterrows():
+                    result.append(row.to_dict())
+            else:
+                # Different clubs → merge
+                merged = group.iloc[0].to_dict()
+                merged['Team'] = ' / '.join(sorted(group['Team'].unique()))
+                for col in sum_cols:
+                    if col in group.columns:
+                        merged[col] = group[col].sum()
+                # Best bowling spell
+                best_idx = max(group.index, key=lambda i: bb_sort_key(group.loc[i, 'Best Bowling']))
+                merged['Best Bowling'] = group.loc[best_idx, 'Best Bowling']
+                merged['Best Bowling Against'] = group.loc[best_idx, 'Best Bowling Against'] if 'Best Bowling Against' in group.columns else 'Unknown'
+                # Recalculate derived stats
+                balls = merged['Balls']
+                wkts = merged['Wickets']
+                merged['Overs'] = (balls // 6) + (balls % 6) / 10
+                merged['Average'] = (merged['Runs'] / wkts) if wkts > 0 else float('nan')
+                merged['Economy'] = ((merged['Runs'] / balls) * 6) if balls > 0 else float('nan')
+                merged['Strike Rate'] = (balls / wkts) if wkts > 0 else float('nan')
+                result.append(merged)
+
+        return pd.DataFrame(result).reset_index(drop=True)
+
     def group_batting(df_to_group):
         agg_dict = {
             'Name': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
-            'Team Played For': lambda x: combine_teams(x, domain),
             'Matches': 'sum', 'Innings': 'sum', 'Not Outs': 'sum', 'Runs': 'sum',
             'Balls': 'sum', 'Fours': 'sum', 'Sixes': 'sum', 'High Score': parse_high_score
         }
@@ -1226,15 +1324,15 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         df_copy['Score_NO'] = df_copy['High Score'].apply(is_not_out)
         
         sorted_bat = df_copy.sort_values(by=['Score_Int', 'Score_NO'], ascending=[False, False])
-        best_innings = sorted_bat.drop_duplicates(subset=['League', 'Cleaned Name']).copy()
+        best_innings = sorted_bat.drop_duplicates(subset=['League', 'Cleaned Name', 'Team Played For']).copy()
         if 'Opponent' in best_innings.columns:
             best_innings['High Score Against'] = best_innings['Opponent']
         else:
             best_innings['High Score Against'] = "Unknown"
-        best_innings_map = best_innings.set_index(['League', 'Cleaned Name'])['High Score Against']
+        best_innings_map = best_innings.set_index(['League', 'Cleaned Name', 'Team Played For'])['High Score Against']
 
-        grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg(agg_dict).reset_index()
-        grouped = grouped.merge(best_innings_map, on=['League', 'Cleaned Name'], how='left')
+        grouped = df_to_group.groupby(['League', 'Cleaned Name', 'Team Played For']).agg(agg_dict).reset_index()
+        grouped = grouped.merge(best_innings_map, on=['League', 'Cleaned Name', 'Team Played For'], how='left')
         
         grouped.rename(columns={'Team Played For': 'Team', 'Name': 'Player'}, inplace=True)
         grouped.drop(columns=['Cleaned Name'], inplace=True)
@@ -1247,22 +1345,22 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
             if col in grouped.columns: cols.append(col)
         return grouped[cols]
 
+
     def group_bowling(df_to_group, bat_avgs):
         sorted_df = df_to_group.sort_values(by=['Wickets', 'Runs'], ascending=[False, True])
-        best_spells = sorted_df.drop_duplicates(subset=['League', 'Cleaned Name']).copy()
+        best_spells = sorted_df.drop_duplicates(subset=['League', 'Cleaned Name', 'Team Played For']).copy()
         best_spells['Best Bowling'] = best_spells['Wickets'].fillna(0).astype(int).astype(str) + '-' + best_spells['Runs'].fillna(0).astype(int).astype(str)
         if 'Opponent' in best_spells.columns:
             best_spells['Best Bowling Against'] = best_spells['Opponent']
         else:
             best_spells['Best Bowling Against'] = "Unknown"
-        bbi_series = best_spells.set_index(['League', 'Cleaned Name'])[['Best Bowling', 'Best Bowling Against']]
+        bbi_series = best_spells.set_index(['League', 'Cleaned Name', 'Team Played For'])[['Best Bowling', 'Best Bowling Against']]
         
-        grouped = df_to_group.groupby(['League', 'Cleaned Name']).agg({
+        grouped = df_to_group.groupby(['League', 'Cleaned Name', 'Team Played For']).agg({
             'Bowler': lambda x: x.value_counts().index[0] if not x.empty else "Unknown",
-            'Team Played For': lambda x: combine_teams(x, domain),
             'Innings': 'sum', 'Balls': 'sum', 'Maidens': 'sum', 'Runs': 'sum', 'Wickets': 'sum'
         }).reset_index()
-        grouped = grouped.merge(bbi_series, on=['League', 'Cleaned Name'], how='left')
+        grouped = grouped.merge(bbi_series, on=['League', 'Cleaned Name', 'Team Played For'], how='left')
         grouped.rename(columns={'Team Played For': 'Team', 'Bowler': 'Player'}, inplace=True)
         grouped.drop(columns=['Cleaned Name'], inplace=True)
         
@@ -1273,24 +1371,34 @@ def calculate_averages(batting_df, bowling_df, player_club_map, team_keys, leagu
         grouped['Average'] = np.where(grouped['Wickets'] > 0, grouped['Runs'] / grouped['Wickets'], np.nan)
         grouped['Economy'] = np.where(grouped['Balls'] > 0, (grouped['Runs'] / grouped['Balls']) * 6, np.nan)
         grouped['Strike Rate'] = np.where(grouped['Wickets'] > 0, grouped['Balls'] / grouped['Wickets'], np.nan)
-        return grouped[['League', 'Player', 'Team', 'Matches', 'Innings', 'Overs', 'Maidens', 'Runs', 'Wickets', 'Best Bowling', 'Best Bowling Against', 'Average', 'Economy', 'Strike Rate']]
+        return grouped[['League', 'Player', 'Team', 'Matches', 'Innings', 'Balls', 'Overs', 'Maidens', 'Runs', 'Wickets', 'Best Bowling', 'Best Bowling Against', 'Average', 'Economy', 'Strike Rate']]
 
     if domain == "Midweek":
-        leagues_bat = group_batting(batting_df)
+        leagues_bat_pt = group_batting(batting_df)
         overall_bat_df = batting_df.copy()
         overall_bat_df['League'] = 'Overall Midweek'
-        overall_bat = group_batting(overall_bat_df)
-        batting_final = pd.concat([leagues_bat, overall_bat], ignore_index=True)
-        
-        leagues_bowl = group_bowling(bowling_df, batting_final)
+        overall_bat_pt = group_batting(overall_bat_df)
+        batting_per_team = pd.concat([leagues_bat_pt, overall_bat_pt], ignore_index=True)
+        batting_final = merge_cross_club_batting(batting_per_team)
+
+        leagues_bowl_pt = group_bowling(bowling_df, batting_per_team)
         overall_bowl_df = bowling_df.copy()
         overall_bowl_df['League'] = 'Overall Midweek'
-        overall_bowl = group_bowling(overall_bowl_df, batting_final)
-        bowling_final = pd.concat([leagues_bowl, overall_bowl], ignore_index=True)
+        overall_bowl_pt = group_bowling(overall_bowl_df, batting_per_team)
+        bowling_per_team = pd.concat([leagues_bowl_pt, overall_bowl_pt], ignore_index=True)
+        bowling_final = merge_cross_club_bowling(bowling_per_team)
     else:
-        batting_final = group_batting(batting_df)
-        bowling_final = group_bowling(bowling_df, batting_final)
-        
+        batting_per_team = group_batting(batting_df)
+        batting_final = merge_cross_club_batting(batting_per_team)
+        bowling_per_team = group_bowling(bowling_df, batting_per_team)
+        bowling_final = merge_cross_club_bowling(bowling_per_team)
+
+    # Recalculate Overs from the (possibly re-summed) Balls column, then drop Balls
+    if 'Balls' in bowling_final.columns:
+        bowling_final['Overs'] = (bowling_final['Balls'].astype(int) // 6) + (bowling_final['Balls'].astype(int) % 6) / 10
+        bowling_final = bowling_final.drop(columns=['Balls'])
+
+
     if bat_sort == "Average": batting_final = batting_final.sort_values(by=['League', 'Average', 'Runs'], ascending=[True, False, False])
     elif bat_sort == "Strike Rate": batting_final = batting_final.sort_values(by=['League', 'Strike Rate', 'Runs'], ascending=[True, False, False])
     else: batting_final = batting_final.sort_values(by=['League', 'Runs', 'Average'], ascending=[True, False, False])
