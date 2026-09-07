@@ -530,6 +530,7 @@ elif app_mode == "Registration Checks":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"reg_check_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"reg_check_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"reg_check_ab_{domain}")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=c_files.get("revenue", eng.get_default_revenue_file()), key=f"reg_check_revenue_{domain}")
         
         include_irish = False
         if domain == "Men's":
@@ -562,9 +563,9 @@ elif app_mode == "Registration Checks":
                         end_ts = pd.to_datetime(end_date)
                         
                         if domain == "Men's" and include_irish:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         else:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         
                         try:
                             excel_io.seek(0)
@@ -631,6 +632,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                 f_bat = st.text_input("Midweek Batting Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"]["bat"], key="mw_check_bat")
                 f_bowl = st.text_input("Midweek Bowling Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"]["bowl"], key="mw_check_bowl")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"].get("abandoned", ""), key="mw_check_ab")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=eng.DEFAULT_FILES["Midweek"].get("revenue", eng.get_default_revenue_file()), key="mw_check_revenue")
 
         st.subheader("Run Midweek Audit Engine")
         if st.button("🚀 Execute Midweek Audit", type="primary"):
@@ -648,7 +650,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                     try:
                         start_ts = pd.to_datetime(start_date)
                         end_ts = pd.to_datetime(end_date)
-                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         
                         try:
                             excel_io.seek(0)
@@ -777,6 +779,7 @@ elif app_mode == "Club Fines Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"fines_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"fines_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"fines_ab_{domain}")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=c_files.get("revenue", eng.get_default_revenue_file()), key=f"fines_revenue_{domain}")
                 
                 if domain != "Midweek":
                     f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"fines_starring_{domain}")
@@ -830,11 +833,11 @@ elif app_mode == "Club Fines Generator":
                         
                         if domain != "Midweek":
                             if domain == "Men's" and include_irish:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                             else:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         else:
-                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_club_fines_report(audit_excel_io, forfeit_path, start_ts, end_ts)
@@ -869,6 +872,7 @@ elif app_mode == "Unregistered Player Fines Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"unreg_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"unreg_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"unreg_ab_{domain}")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=c_files.get("revenue", eng.get_default_revenue_file()), key=f"unreg_revenue_{domain}")
                 
                 if domain != "Midweek":
                     f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"unreg_starring_{domain}")
@@ -912,11 +916,11 @@ elif app_mode == "Unregistered Player Fines Generator":
                         
                         if domain != "Midweek":
                             if domain == "Men's" and include_irish:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                             else:
-                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                                audit_excel_io, _ = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         else:
-                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            audit_excel_io, _ = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                             
                         audit_excel_io.seek(0)
                         doc_io = eng.generate_unregistered_fines_only(audit_excel_io)
