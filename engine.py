@@ -5664,8 +5664,8 @@ def run_registration_fee_audit():
     df_rev = clean_revenue_report(rev_files[0])
     
     # Find DOB Report (prefer most recent export)
-    dob_files = glob.glob('Player_Registrations_for_2026_with_DOB*.csv')
-    dob_files = [f for f in dob_files if not os.path.basename(f).startswith('~$')]
+    dob_files = glob.glob('Player_Registrations_for_*with_DOB*.csv') + glob.glob('*Player_Registrations*DOB*.csv')
+    dob_files = list(dict.fromkeys([f for f in dob_files if not os.path.basename(f).startswith('~$')]))
     if not dob_files:
         dob_files = ['Player_Registrations_for_2026_with_DOB-2026-08-27T095733.csv']
     else:
