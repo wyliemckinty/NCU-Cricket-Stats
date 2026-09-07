@@ -5563,6 +5563,8 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
     return doc_io
 
 def run_registration_fee_audit():
+    import os
+    import glob
     import unicodedata
     import re
     from datetime import datetime
@@ -5635,9 +5637,29 @@ def run_registration_fee_audit():
         'nathann mccurry': 'Nathan McCurry',
         'teddy mcilwaine': 'Teddy McIlwaine',
         'rene margot rankin': 'René Rankin',
+        "aiden o'gormon": "Aidan O'Gorman",
+        "frazer mitchell": "Fraser Mitchell",
+        "issac wilkinson": "Isaac Wilkinson",
+        "kurian saji": "Kurian Saji Thoonkuzhy",
+        "manjush cherian": "Manjush George Cherian",
+        "mohammed asif": "Mohammad Asif",
+        "philip vidamour": "Phil Vidamour",
     }
     for k, v in explicit_aliases.items():
         alias_map[norm(k)] = v
+        
+    # Supplement alias_map from Master ID Mapping files
+    for id_file in ['NCU_Mens_Master_ID_Mapping.xlsx', 'NCU_Womens_Master_ID_Mapping.xlsx']:
+        if os.path.exists(id_file):
+            try:
+                df_id_map = pd.read_excel(id_file)
+                for _, r in df_id_map.iterrows():
+                    nv_n = norm(r.get('NV_Play_Name', ''))
+                    s80_n = str(r.get('Sport80_Name', '')).strip()
+                    if nv_n and s80_n and s80_n.lower() != 'nan' and nv_n not in alias_map:
+                        alias_map[nv_n] = s80_n
+            except Exception:
+                pass
     
     # 2. 3,766 Registered Players
     df_reg = pd.read_excel('1. NCU_Registered_Players.xlsx')
@@ -5922,7 +5944,6 @@ def run_registration_fee_audit():
         with open('error_match_fix.txt', 'w') as f2: f2.write(str(e))
     df_master['Played_Adult_Matches'] = df_master['Total_Matches'] > 0
     df_master['Date of Birth'] = df_master['DOB'].dt.strftime('%Y-%m-%d')
-    df_master['Age as of 30 June 2026'] = df_master['Age_30June2026']
     
     # Calculate exact age on date of first senior match debut
     def calc_age_at_date(dob, target_date):
@@ -5992,10 +6013,36 @@ def run_registration_fee_audit():
     def fmt(c):
         return CLUB_DISPLAY.get(c, f"{c} Cricket Club" if "XI" not in c and "Cricket Club" not in c else c)
     
+    # Load 4. Unregistered_Manual_Map.xlsx if available
+    unreg_manual_map = {}
+    f_unreg = '4. Unregistered_Manual_Map.xlsx'
+    if os.path.exists(f_unreg):
+        try:
+            df_unreg_manual = pd.read_excel(f_unreg)
+            if not df_unreg_manual.empty:
+                col_p = df_unreg_manual.columns[0]
+                col_t = df_unreg_manual.columns[1]
+                for _, u_row in df_unreg_manual.iterrows():
+                    if pd.notna(u_row[col_p]) and pd.notna(u_row[col_t]):
+                        raw_u_name = str(u_row[col_p]).strip()
+                        raw_u_team = str(u_row[col_t]).strip()
+                        norm_u = norm(raw_u_name)
+                        alias_u = norm(alias_map.get(norm_u, norm_u))
+                        c_base = extract_base_club(raw_u_team)
+                        c_fmt = fmt(c_base) if c_base != 'Unknown' else raw_u_team
+                        for k in [norm_u, alias_u]:
+                            if k:
+                                unreg_manual_map[k] = c_fmt
+        except Exception:
+            pass
+    
     inferred_list = []
     for _, r in unmatched_matches.iterrows():
         p_name = str(r['Match_Player_Display']).strip()
         teams_str = str(r['Teams']).strip()
+        m_norm = r['Match_Norm']
+        resolved_norm = norm(alias_map.get(m_norm, m_norm))
+
         if p_name == "Tyler Mcgladdery" or p_name == "Tyler McGladdery":
             inferred_list.append("Derriaghy Cricket Club (Overseas Professional)")
             continue
@@ -6004,6 +6051,22 @@ def run_registration_fee_audit():
             continue
         if p_name == "Molly Sawyer":
             inferred_list.append("CIYMS Cricket Club")
+            continue
+
+        # Check Unregistered Manual Map
+        matched_manual_club = None
+        if m_norm in unreg_manual_map:
+            matched_manual_club = unreg_manual_map[m_norm]
+        elif resolved_norm in unreg_manual_map:
+            matched_manual_club = unreg_manual_map[resolved_norm]
+        else:
+            raw_names_list = [norm(x.strip()) for x in str(r.get('Raw_Names', '')).split(',') if x.strip()]
+            for rn in raw_names_list:
+                if rn in unreg_manual_map:
+                    matched_manual_club = unreg_manual_map[rn]
+                    break
+        if matched_manual_club:
+            inferred_list.append(matched_manual_club)
             continue
         raw_fixtures = re.split(r',\s*(?=[A-Za-z0-9 ]+\s+v\s+)', teams_str)
         fixture_club_pairs = []
@@ -6111,19 +6174,19 @@ def run_registration_fee_audit():
         unmatched_matches[cols_un].to_excel(writer, sheet_name='Unregistered Scorecard Players', index=False)
         
         # Detail sheets
-        cols_reg_unpaid_y = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Teams']
+        cols_reg_unpaid_y = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Teams']
         c_youth_played_unpaid[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Youth in Adult Cricket', index=False)
         c_adult_played_paid0[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Adults (£10 shortfall)', index=False)
         
-        cols_reg_with_types = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']
+        cols_reg_with_types = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']
         c_adult_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Adults Paid Youth Rate (£5)', index=False)
-        c_youth_noplay_paid[['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid No Adult Matches', index=False)
+        c_youth_noplay_paid[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid No Adult Matches', index=False)
         
         c_adult_played_paid10[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Adults (£10+)', index=False)
         c_youth_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Youths (£5)', index=False)
         
-        c_youth_noplay_unpaid[['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
-        c_adult_noplay_paid10[['Full_Name', 'Date of Birth', 'Age as of 30 June 2026', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
+        c_youth_noplay_unpaid[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
+        c_adult_noplay_paid10[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
         
         # Missing Date of Birth Sheet
         cols_missing = ['Full_Name', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Played_Adult_Matches', 'Teams']

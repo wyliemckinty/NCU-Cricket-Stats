@@ -1087,6 +1087,7 @@ elif app_mode == "Registration Fee Audit":
         st.markdown("- `2. NCU_Validated_Aliases_Master.xlsx`")
         st.markdown("- `12. NCU_Validated_Women's Aliases_Master.xlsx`")
         st.markdown("- Player Registrations with DOB file (e.g. `Player_Registrations_for_2026_with_DOB-*.csv`)")
+        st.markdown("- `4. Unregistered_Manual_Map.xlsx` *(optional manual club mapping for unregistered players)*")
         st.markdown("- The raw Sport80 Revenue Report (e.g. `revenue_report_il_from_*.xlsx`)")
         st.markdown("- *Plus the standard NV Play stats files (Sat, Women, Midweek)*")
         
