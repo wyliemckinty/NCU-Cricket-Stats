@@ -5644,6 +5644,10 @@ def run_registration_fee_audit():
         "manjush cherian": "Manjush George Cherian",
         "mohammed asif": "Mohammad Asif",
         "philip vidamour": "Phil Vidamour",
+        "ali quadri": "Mubashir Ali",
+        "josh hall": "Joshua Hall",
+        "ashley murray": "William Murray",
+        "nathan samuel": "Nathan Knox",
     }
     for k, v in explicit_aliases.items():
         alias_map[norm(k)] = v
@@ -6187,6 +6191,12 @@ def run_registration_fee_audit():
         
         c_youth_noplay_unpaid[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
         c_adult_noplay_paid10[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
+        
+        # Non-Playing Adults (£5 or £0)
+        c_adult_noplay_underpaid = df_master[(~df_master['Is_Youth']) & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] < 10)].copy()
+        c_adult_noplay_underpaid['Types_Paid'] = c_adult_noplay_underpaid['Types_Paid'].fillna('Unpaid (£0)')
+        cols_adult_noplay = ['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']
+        c_adult_noplay_underpaid[cols_adult_noplay].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£5 or £0)', index=False)
         
         # Missing Date of Birth Sheet
         cols_missing = ['Full_Name', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Played_Adult_Matches', 'Teams']
