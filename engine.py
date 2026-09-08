@@ -5429,7 +5429,8 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(f"{r['Player Name']}").bold = True
         clubs_str = " and ".join(r['Clubs'])
-        p.add_run(f": Paid under {clubs_str} (£{r['Total_Paid']} total).")
+        tot_str = str(int(r['Total_Paid'])) if float(r['Total_Paid']).is_integer() else str(r['Total_Paid'])
+        p.add_run(f": Paid under {clubs_str} (£{tot_str} total).")
 
     p = doc.add_paragraph()
     p.add_run("Cause: ").bold = True
@@ -5443,7 +5444,8 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
             p_ns = doc.add_paragraph(style='List Bullet')
             p_ns.add_run(f"{r['Player Name']}: ").bold = True
             dob_parts = [f"{c} (DOB {d})" for c, d in dobs.items()]
-            p_ns.add_run("; ".join(dob_parts) + f" — paid £{r['Total_Paid']} across both clubs.")
+            tot_str = str(int(r['Total_Paid'])) if float(r['Total_Paid']).is_integer() else str(r['Total_Paid'])
+            p_ns.add_run("; ".join(dob_parts) + f" — paid £{tot_str} across both clubs.")
 
     doc.add_paragraph("_" * 80)
 
@@ -5451,24 +5453,24 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
         {
             'display': 'Jack Kirkpatrick (Muckamore Cricket Club)',
             'details': [
-                ('Jack Kirkpatrick snr', 'Adult (Over 18)', '10.0', '2026-07-14', 'DOB 15/11/2001 (Age 24)'),
-                ('Jack Kirkpatrick jnr', 'Youth Player (Playing Adult and Youth Cricket)', '5.0', '2026-02-23', 'DOB 07/04/2009 (Age 17)')
+                ('Jack Kirkpatrick snr', 'Adult (Over 18)', '10', '2026-07-14', 'DOB 15/11/2001 (Age 24)'),
+                ('Jack Kirkpatrick jnr', 'Youth Player (Playing Adult and Youth Cricket)', '5', '2026-02-23', 'DOB 07/04/2009 (Age 17)')
             ],
             'explanation': 'Sport80 date of birth records reveal there are two different Jack Kirkpatricks at Muckamore CC—an adult and a youth. In the raw transaction export, both were entered under "Jack Kirkpatrick". The audit links the £10 payment to Jack Kirkpatrick Snr and the £5 payment to Jack Kirkpatrick Jnr, properly classifying both as compliant.'
         },
         {
             'display': 'James Magee (Instonians Cricket Club)',
             'details': [
-                ('James Magee snr', 'Adult (Over 18)', '10.0', '2026-03-01', 'DOB 27/12/1995 (Adult)'),
-                ('James Magee jnr', 'Youth Registration', '5.0', '2026-06-08', 'DOB 18/11/2015 (Youth)')
+                ('James Magee snr', 'Adult (Over 18)', '10', '2026-03-01', 'DOB 27/12/1995 (Adult)'),
+                ('James Magee jnr', 'Youth Registration', '5', '2026-06-08', 'DOB 18/11/2015 (Youth)')
             ],
             'explanation': 'Sport80 date of birth records reveal there are two different James Magees at Instonians CC—an adult and a youth. Both are fully reconciled in their respective categories.'
         },
         {
             'display': 'Peter & Teddy McIlwaine (Bangor Cricket Club)',
             'details': [
-                ('Peter McIlwaine', 'NCU Playing adult / over 18', '10.0', '2026-04-28', 'DOB 19/01/1972 (Age 54)'),
-                ('Teddy McIlwaine', 'NCU Youth players playing adult cricket', '5.0', '2026-03-01', 'DOB 14/11/2012 (Age 13)')
+                ('Peter McIlwaine', 'NCU Playing adult / over 18', '10', '2026-04-28', 'DOB 19/01/1972 (Age 54)'),
+                ('Teddy McIlwaine', 'NCU Youth players playing adult cricket', '5', '2026-03-01', 'DOB 14/11/2012 (Age 13)')
             ],
             'explanation': 'Peter McIlwaine is an adult playing senior cricket, and Teddy McIlwaine is his junior son playing adult cricket. Both are captured as fully compliant.'
         }
@@ -5498,7 +5500,8 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
         for _, tx in txs.iterrows():
             date_str = str(tx['Payment Date'])[:10]
             amt = tx['Payment Amount']
-            p_sub = doc.add_paragraph(f"Paid £{amt} on {date_str}", style='List Bullet 2')
+            amt_str = str(int(amt)) if isinstance(amt, (int, float)) and float(amt).is_integer() else str(amt)
+            p_sub = doc.add_paragraph(f"Paid £{amt_str} on {date_str}", style='List Bullet 2')
         
         p_inv = doc.add_paragraph(style='List Bullet 2')
         p_inv.add_run("Investigation: ").italic = True
@@ -5539,12 +5542,14 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
     for _, r in unregistered_payers.iterrows():
         p = doc.add_paragraph(style='List Bullet')
         p.add_run(f"{r['Player Name']} ").bold = True
-        p.add_run(f"(£{r['Total_Paid']}, {r['Clubs'][0]}): ")
+        tot_str = str(int(r['Total_Paid'])) if float(r['Total_Paid']).is_integer() else str(r['Total_Paid'])
+        p.add_run(f"(£{tot_str}, {r['Clubs'][0]}): ")
         if r['Player Name'] == 'Jared Wilson':
             p.add_run("Registered in Sport80 on 27th August 2026 (late registration after initial export).")
         else:
             p.add_run("Paid fees, but never registered as players and never appeared on scorecards.")
     doc.add_paragraph("_" * 80)
+
 
     doc.add_heading('7. Financial Integrity Checks Passed', level=1)
     p1 = doc.add_paragraph(style='List Bullet')
@@ -5776,7 +5781,17 @@ def run_registration_fee_audit():
 
     df_rev['Norm_Name'] = df_rev['Player Name'].apply(norm)
     df_rev['Resolved_Norm'] = df_rev['Norm_Name'].apply(lambda x: norm(alias_map.get(x, x)))
-    df_rev['Payment_Details'] = df_rev['Club'].fillna('').astype(str) + ' - ' + df_rev['Type'].fillna('').astype(str) + ' (£' + df_rev['Payment Amount'].astype(str) + ')'
+    
+    def fmt_amt(a):
+        if pd.isna(a) or a is None: return ""
+        try:
+            clean = str(a).replace('£', '').replace(',', '').strip()
+            f = float(clean)
+            return str(int(f)) if f.is_integer() else str(f)
+        except Exception:
+            return str(a)
+
+    df_rev['Payment_Details'] = df_rev['Club'].fillna('').astype(str) + ' - ' + df_rev['Type'].fillna('').astype(str) + ' (£' + df_rev['Payment Amount'].apply(fmt_amt) + ')'
     
     rev_summary = df_rev.groupby('Resolved_Norm').agg(
         Revenue_Name=('Player Name', 'first'),
@@ -5958,13 +5973,20 @@ def run_registration_fee_audit():
     df_master['First Match Date'] = df_master['First_Match_Date'].dt.strftime('%Y-%m-%d')
     df_master['Age on First Match'] = df_master['Age_At_First_Match']
     
-    # Age Rule: If player was under 18 when they played their first game, they only had to pay the youth rate (£5).
-    # For players who did not play adult matches, standard Age_30June2026 < 18 applies.
+    # Calculate age on date registered in Sport80
+    df_master['Date_Reg'] = pd.to_datetime(df_master['Date Registered'], errors='coerce')
+    df_master['Age_At_Registration'] = df_master.apply(lambda r: calc_age_at_date(r['DOB'], r['Date_Reg']), axis=1)
+    df_master['Age at Registration'] = df_master['Age_At_Registration'].fillna(df_master['Age_30June2026']).astype(int)
+    df_master['Date Registered Formatted'] = df_master['Date_Reg'].dt.strftime('%Y-%m-%d')
+    df_master['Matches Played'] = df_master['Teams']
+    
+    # Universal Age Rule:
+    # All players (playing and non-playing) are evaluated on their exact age on the date they registered on Sport80.
     def determine_is_youth(r):
-        if r['Played_Adult_Matches']:
-            if pd.notna(r['Age_At_First_Match']):
-                return r['Age_At_First_Match'] < 18
-            return r['Age_30June2026'] < 18
+        if pd.notna(r['Age_At_Registration']):
+            return r['Age_At_Registration'] < 18
+        if pd.notna(r['Age_At_First_Match']):
+            return r['Age_At_First_Match'] < 18
         return r['Age_30June2026'] < 18
 
     df_master['Is_Youth'] = df_master.apply(determine_is_youth, axis=1).fillna(False)
@@ -6106,6 +6128,8 @@ def run_registration_fee_audit():
     unmatched_matches['Registration Status'] = 'Unregistered (Not in Sport80)'
     unmatched_matches['Total_Paid'] = 0
     unmatched_matches['Payment Status'] = 'Unpaid (£0)'
+    unmatched_matches['Matches Played'] = unmatched_matches['Teams']
+    unmatched_matches = unmatched_matches.sort_values(by=['Inferred Club', 'Match_Player_Display'], ascending=[True, True])
     
     # Subsets
     c_youth_played_paid5 = df_master[df_master['Is_Youth'] & df_master['Played_Adult_Matches'] & (df_master['Total_Paid'] == 5)]
@@ -6131,18 +6155,18 @@ def run_registration_fee_audit():
 
     # Summary Rows
     summary_rows = [
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on first match debut) who PLAYED adult cricket - PAID £10+ or Armagh Student (Compliant)', 'Count': len(c_adult_played_paid10), 'Status': 'Compliant'},
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on first match debut) who PLAYED adult cricket - PAID £5 (Underpaid Youth Rate)', 'Count': len(c_adult_played_paid5), 'Status': 'Underpaid (£5 shortfall)'},
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on first match debut) who PLAYED adult cricket - PAID £0 (Unpaid Adult Fee)', 'Count': len(c_adult_played_paid0), 'Status': 'Unpaid (£10 shortfall)'},
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on first match debut) who PLAYED adult cricket - PAID £5 (Compliant)', 'Count': len(c_youth_played_paid5), 'Status': 'Compliant'},
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on first match debut) who PLAYED adult cricket - PAID > £5 (Paid Adult Rate £10+)', 'Count': len(c_youth_played_paid10), 'Status': 'Compliant'},
-        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on first match debut) who PLAYED adult cricket - PAID £0 (Unpaid Playing Youth Fee)', 'Count': len(c_youth_played_unpaid), 'Status': 'Unpaid (£5 shortfall)'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on registration date) who PLAYED adult cricket - PAID £10+ or Armagh Student (Compliant)', 'Count': len(c_adult_played_paid10), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on registration date) who PLAYED adult cricket - PAID £5 (Underpaid Youth Rate)', 'Count': len(c_adult_played_paid5), 'Status': 'Underpaid (£5 shortfall)'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Adults (>=18 on registration date) who PLAYED adult cricket - PAID £0 (Unpaid Adult Fee)', 'Count': len(c_adult_played_paid0), 'Status': 'Unpaid (£10 shortfall)'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on registration date) who PLAYED adult cricket - PAID £5 (Compliant)', 'Count': len(c_youth_played_paid5), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on registration date) who PLAYED adult cricket - PAID > £5 (Paid Adult Rate £10+)', 'Count': len(c_youth_played_paid10), 'Status': 'Compliant'},
+        {'Section': 'SECTION 1: REGISTERED PLAYERS WHO PLAYED ADULT CRICKET', 'Category': 'Youth (<18 on registration date) who PLAYED adult cricket - PAID £0 (Unpaid Playing Youth Fee)', 'Count': len(c_youth_played_unpaid), 'Status': 'Unpaid (£5 shortfall)'},
         
-        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT PLAY ADULT CRICKET', 'Category': 'Adults (>=18 on 30-June-2026) who DID NOT play adult cricket - PAID £10+ (Non-Playing Adult)', 'Count': len(c_adult_noplay_paid10), 'Status': 'Compliant (Non-Playing)'},
-        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>=18 on 30-June-2026) who DID NOT play adult cricket - PAID £5 (Non-Playing Youth Rate)', 'Count': len(c_adult_noplay_paid5), 'Status': 'Non-Playing'},
-        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>=18 on 30-June-2026) who DID NOT play adult cricket - PAID £0 (Non-Playing Unpaid)', 'Count': len(c_adult_noplay_paid0), 'Status': 'Non-Playing'},
-        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<18 on 30-June-2026) who DID NOT play adult cricket - PAID £5+ (Exempt / Unused Fee)', 'Count': len(c_youth_noplay_paid), 'Status': 'Exempt (Fee Paid)'},
-        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<18 on 30-June-2026) who DID NOT play adult cricket - PAID £0 (Exempt Junior Cricket Only)', 'Count': len(c_youth_noplay_unpaid), 'Status': 'Compliant (Exempt £0)'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT PLAY ADULT CRICKET', 'Category': 'Adults (>=18 on registration date) who DID NOT play adult cricket - PAID £10+ (Non-Playing Adult)', 'Count': len(c_adult_noplay_paid10), 'Status': 'Compliant (Non-Playing)'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>=18 on registration date) who DID NOT play adult cricket - PAID £5 (Non-Playing Youth Rate)', 'Count': len(c_adult_noplay_paid5), 'Status': 'Non-Playing'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Adults (>=18 on registration date) who DID NOT play adult cricket - PAID £0 (Non-Playing Unpaid)', 'Count': len(c_adult_noplay_paid0), 'Status': 'Non-Playing'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<18 on registration date) who DID NOT play adult cricket - PAID £5+ (Exempt / Unused Fee)', 'Count': len(c_youth_noplay_paid), 'Status': 'Exempt (Fee Paid)'},
+        {'Section': 'SECTION 2: REGISTERED PLAYERS WHO DID NOT play adult cricket', 'Category': 'Youth (<18 on registration date) who DID NOT play adult cricket - PAID £0 (Exempt Junior Cricket Only)', 'Count': len(c_youth_noplay_unpaid), 'Status': 'Compliant (Exempt £0)'},
         
         {'Section': 'TOTAL OFFICIAL REGISTERED PLAYERS (1. NCU_Registered_Players.xlsx)', 'Category': 'TOTAL REGISTERED PLAYERS ACCOUNTED FOR', 'Count': len(df_master), 'Status': '100% Reconciled'},
         
@@ -6172,34 +6196,47 @@ def run_registration_fee_audit():
             'Payment Status',
             'Total_Matches',
             'Competitions',
-            'Teams',
-            'Raw_Names'
+            'Matches Played'
         ]
         unmatched_matches[cols_un].to_excel(writer, sheet_name='Unregistered Scorecard Players', index=False)
         
         # Detail sheets
-        cols_reg_unpaid_y = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Teams']
-        c_youth_played_unpaid[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Youth in Adult Cricket', index=False)
-        c_adult_played_paid0[cols_reg_unpaid_y].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Adults (£10 shortfall)', index=False)
+        cols_playing = ['Full_Name', 'Date of Birth', 'Date Registered Formatted', 'Age at Registration', 'First Match Date', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Matches Played']
+        cols_noplay = ['Full_Name', 'Date of Birth', 'Date Registered Formatted', 'Age at Registration', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid']
+        cols_reg_with_types = cols_playing
+        cols_youth_noplay = cols_noplay
+        cols_adult_noplay = cols_noplay
+        rename_cols = {
+            'Date Registered Formatted': 'Date Registered',
+            'Types_Paid': 'Payment Details'
+        }
         
-        cols_reg_with_types = ['Full_Name', 'Date of Birth', 'First Match Date', 'Age on First Match', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']
-        c_adult_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Adults Paid Youth Rate (£5)', index=False)
-        c_youth_noplay_paid[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Types_Paid', 'Teams']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid No Adult Matches', index=False)
+        c_youth_played_unpaid_exp = c_youth_played_unpaid.copy()
+        c_youth_played_unpaid_exp['Types_Paid'] = c_youth_played_unpaid_exp['Types_Paid'].replace(['', None, 'nan'], np.nan).fillna('Unpaid (£0)')
+        c_youth_played_unpaid_exp[cols_playing].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Youth in Adult Cricket', index=False)
+
+        c_adult_played_paid0_exp = c_adult_played_paid0.copy()
+        c_adult_played_paid0_exp['Types_Paid'] = c_adult_played_paid0_exp['Types_Paid'].replace(['', None, 'nan'], np.nan).fillna('Unpaid (£0)')
+        c_adult_played_paid0_exp[cols_playing].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Unpaid Adults (£10 shortfall)', index=False)
         
-        c_adult_played_paid10[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Adults (£10+)', index=False)
-        c_youth_played_paid5[cols_reg_with_types].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Youths (£5)', index=False)
+        c_adult_played_paid5[cols_playing].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Adults Paid Youth Rate (£5)', index=False)
+        c_youth_noplay_paid[cols_noplay].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Youth Paid (No Senior Games)', index=False)
         
-        c_youth_noplay_unpaid[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
-        c_adult_noplay_paid10[['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
+        c_adult_played_paid10[cols_playing].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Adults (£10+)', index=False)
+        c_youth_played_paid5[cols_playing].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Compliant Youths (£5)', index=False)
+        
+        c_youth_noplay_unpaid_export = c_youth_noplay_unpaid.copy()
+        c_youth_noplay_unpaid_export['Types_Paid'] = c_youth_noplay_unpaid_export['Types_Paid'].replace(['', None, 'nan'], np.nan).fillna('Exempt (£0)')
+        c_youth_noplay_unpaid_export[cols_noplay].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Junior Youths (Exempt £0)', index=False)
+        c_adult_noplay_paid10[cols_noplay].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£10+)', index=False)
         
         # Non-Playing Adults (£5 or £0)
         c_adult_noplay_underpaid = df_master[(~df_master['Is_Youth']) & (~df_master['Played_Adult_Matches']) & (df_master['Total_Paid'] < 10)].copy()
-        c_adult_noplay_underpaid['Types_Paid'] = c_adult_noplay_underpaid['Types_Paid'].fillna('Unpaid (£0)')
-        cols_adult_noplay = ['Full_Name', 'Date of Birth', 'Individual Membership Primary Club', 'Total_Paid', 'Types_Paid']
-        c_adult_noplay_underpaid[cols_adult_noplay].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£5 or £0)', index=False)
+        c_adult_noplay_underpaid['Types_Paid'] = c_adult_noplay_underpaid['Types_Paid'].replace(['', None, 'nan'], np.nan).fillna('Unpaid (£0)')
+        c_adult_noplay_underpaid[cols_noplay].rename(columns=rename_cols).sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Non-Playing Adults (£5 or £0)', index=False)
         
         # Missing Date of Birth Sheet
-        cols_missing = ['Full_Name', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Played_Adult_Matches', 'Teams']
+        cols_missing = ['Full_Name', 'Individual Membership Primary Club', 'Total_Paid', 'Total_Matches', 'Played_Adult_Matches', 'Matches Played']
         if not df_missing_dob.empty:
             df_missing_dob[cols_missing].sort_values(by=['Individual Membership Primary Club', 'Full_Name']).to_excel(writer, sheet_name='Missing Date of Birth', index=False)
         else:
@@ -6278,7 +6315,10 @@ def run_registration_fee_audit():
     
         for col_cells in ws.columns:
             col_letter = get_column_letter(col_cells[0].column)
-            max_len = max(min(len(str(c.value or '')), 65) for c in col_cells)
+            if sname == 'Audit Summary':
+                max_len = max(len(str(c.value or '')) for c in col_cells)
+            else:
+                max_len = max(min(len(str(c.value or '')), 65) for c in col_cells)
             ws.column_dimensions[col_letter].width = max(max_len + 2, 10)
     
     final_excel_io = io.BytesIO()
