@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 import importlib
 
 import engine as eng
-importlib.reload(eng)  # Force Python to reload engine.py on every rerun
 
 try:
     from docx import Document
@@ -233,6 +232,8 @@ if app_mode == "Player Word Doc Generator":
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
+                f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"doc_league_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"doc_cup_{domain}")
         
         include_irish = False
         if domain == "Men's":
@@ -289,7 +290,7 @@ if app_mode == "Player Word Doc Generator":
                             if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                         alias_map = eng.build_alias_map(aliases, domain)
-                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
+                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, id_map_df=id_map_df)
                         
                         def resolve_duplicates(row, name_col):
                             name = str(row[name_col])
@@ -434,8 +435,15 @@ if app_mode == "Player Word Doc Generator":
                         p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                         
+                        league_df = get_excel_df(f_league)
+                        cup_df = get_excel_df(f_cup)
+                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                            league_dict = dict(zip(league_df['Team'], league_df['League']))
+                        else:
+                            league_dict = None
+
                         playing_name = eng.get_player_playing_name(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df, playing_name=playing_name)
+                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
                         st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
                     else:
                         st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
@@ -452,8 +460,15 @@ if app_mode == "Player Word Doc Generator":
                                 p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                                 p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                                 
+                                league_df = get_excel_df(f_league)
+                                cup_df = get_excel_df(f_cup)
+                                if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                                    league_dict = dict(zip(league_df['Team'], league_df['League']))
+                                else:
+                                    league_dict = None
+
                                 playing_name = eng.get_player_playing_name(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df, playing_name=playing_name)
+                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
                                 st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
                             else:
                                 zip_buffer = io.BytesIO()
@@ -466,7 +481,13 @@ if app_mode == "Player Word Doc Generator":
                                         p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
                                         p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
                                         playing_name = eng.get_player_playing_name(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, id_map_df=id_map_df, playing_name=playing_name)
+                                        league_df = get_excel_df(f_league)
+                                        cup_df = get_excel_df(f_cup)
+                                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
+                                            league_dict = dict(zip(league_df['Team'], league_df['League']))
+                                        else:
+                                            league_dict = None
+                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
                                         zip_file.writestr(filename, doc_io.getvalue())
                                         
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
@@ -540,9 +561,10 @@ elif app_mode == "Registration Checks":
                         
                         try:
                             excel_io.seek(0)
-                            df_unreg = pd.read_excel(excel_io, sheet_name="Unregistered Matches")
-                            df_deemed = pd.read_excel(excel_io, sheet_name="Deemed Registered")
-                            df_starring_viols = pd.read_excel(excel_io, sheet_name="Starring Violations")
+                            with pd.ExcelFile(excel_io) as xf:
+                                df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
+                                df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
+                                df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
                             
                             unreg_count = len(df_unreg) if not df_unreg.empty and 'Status' not in df_unreg.columns else 0
                             deemed_count = len(df_deemed) if not df_deemed.empty and 'Status' not in df_deemed.columns else 0
@@ -624,9 +646,10 @@ elif app_mode == "Midweek Registration & Starring Check":
                         
                         try:
                             excel_io.seek(0)
-                            df_unreg = pd.read_excel(excel_io, sheet_name="Unregistered Matches")
-                            df_deemed = pd.read_excel(excel_io, sheet_name="Deemed Registered")
-                            df_starring_viols = pd.read_excel(excel_io, sheet_name="Starring Violations")
+                            with pd.ExcelFile(excel_io) as xf:
+                                df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
+                                df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
+                                df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
                             unreg_count = len(df_unreg) if not df_unreg.empty and 'Status' not in df_unreg.columns else 0
                             deemed_count = len(df_deemed) if not df_deemed.empty and 'Status' not in df_deemed.columns else 0
                             star_count = len(df_starring_viols) if not df_starring_viols.empty and 'Status' not in df_starring_viols.columns else 0

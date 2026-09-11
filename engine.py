@@ -128,7 +128,7 @@ KNOWN_DUPLICATES = {}  # Initialized dynamically via _init_known_duplicates() be
 # ==========================================
 # STANDARDIZED CACHED FILE LOADERS
 # ==========================================
-@st.cache_data(show_spinner="Loading data file...")
+@st.cache_data(show_spinner=False)
 def cached_read_excel(filepath, mtime):
     if not os.path.exists(filepath):
         return pd.DataFrame()
@@ -136,7 +136,7 @@ def cached_read_excel(filepath, mtime):
         return pd.read_csv(filepath)
     return pd.read_excel(filepath)
 
-@st.cache_data(show_spinner="Loading sheet...")
+@st.cache_data(show_spinner=False)
 def cached_read_excel_sheet(filepath, mtime, sheet_name=None, header='infer'):
     if not os.path.exists(filepath):
         return pd.DataFrame()
@@ -144,15 +144,21 @@ def cached_read_excel_sheet(filepath, mtime, sheet_name=None, header='infer'):
         return pd.read_csv(filepath, header=header)
     return pd.read_excel(filepath, sheet_name=sheet_name, header=header)
 
+def _safe_mtime(filepath):
+    try:
+        return os.path.getmtime(filepath)
+    except (OSError, FileNotFoundError, TypeError):
+        return 0
+
 def get_excel_df(filepath):
     if not filepath or not os.path.exists(filepath):
         return pd.DataFrame()
-    return cached_read_excel(filepath, os.path.getmtime(filepath))
+    return cached_read_excel(filepath, _safe_mtime(filepath))
 
 def get_excel_sheet_df(filepath, sheet_name=None, header='infer'):
     if not filepath or not os.path.exists(filepath):
         return pd.DataFrame()
-    return cached_read_excel_sheet(filepath, os.path.getmtime(filepath), sheet_name=sheet_name, header=header)
+    return cached_read_excel_sheet(filepath, _safe_mtime(filepath), sheet_name=sheet_name, header=header)
 
 # ==========================================
 # UNIFIED ENGINE FUNCTIONS 
@@ -240,9 +246,11 @@ def build_dynamic_duplicate_map(id_map_df=None, reg_players_df=None):
     by scanning 1. NCU_Registered_Players.xlsx (multiple CI numbers/clubs)
     and NCU_Mens_Master_ID_Mapping.xlsx (multiple Sport80 IDs/clubs).
     Returns a dict: {player_name: [club1, club2, ...]}
+    Optimized with fast dictionary aggregation for instantaneous execution.
     """
     dup_map = {}
     ignored_clubs = {'northern cricket union', 'ncu', 'unknown club', 'unknown'}
+    from collections import defaultdict
     
     # 1. From Registration file
     if reg_players_df is not None and not reg_players_df.empty:
@@ -250,19 +258,25 @@ def build_dynamic_duplicate_map(id_map_df=None, reg_players_df=None):
         ci_col = next((c for c in reg_players_df.columns if 'ci no' in str(c).lower() or 'membership' in str(c).lower()), None)
         club_col = next((c for c in reg_players_df.columns if 'primary club' in str(c).lower()), None)
         
-        reg_copy = reg_players_df.copy()
-        reg_copy['Norm_Name'] = reg_copy[name_col].astype(str).str.replace('‡', '', regex=False).str.strip().apply(fix_celtic_casing)
-        
-        for name, group in reg_copy.groupby('Norm_Name'):
-            if not name or str(name).lower() in ['nan', 'none', '']: continue
-            unique_cis = set(str(x).replace('.0','').strip() for x in group[ci_col].dropna() if str(x).strip() and str(x).lower() != 'nan') if ci_col else set()
-            raw_clubs = set(extract_base_club_name(c) for c in group[club_col].dropna() if str(c).strip() and str(c).lower() != 'nan') if club_col else set()
-            unique_clubs = {c for c in raw_clubs if c.lower() not in ignored_clubs}
-            
-            if len(unique_cis) > 1 or len(unique_clubs) > 1:
-                if unique_clubs:
-                    dup_map[name] = sorted(list(unique_clubs))
-                
+        reg_data = defaultdict(lambda: {'cis': set(), 'clubs': set()})
+        for _, r in reg_players_df.iterrows():
+            raw_n = r[name_col]
+            if pd.isna(raw_n): continue
+            n = fix_celtic_casing(str(raw_n).replace('‡', '').strip())
+            if not n or n.lower() in ['nan', 'none', '']: continue
+            if ci_col and pd.notna(r[ci_col]):
+                val = str(r[ci_col]).replace('.0', '').strip()
+                if val and val.lower() != 'nan':
+                    reg_data[n]['cis'].add(val)
+            if club_col and pd.notna(r[club_col]):
+                c = extract_base_club_name(r[club_col])
+                if c and c.lower() not in ignored_clubs and str(r[club_col]).strip().lower() != 'nan':
+                    reg_data[n]['clubs'].add(c)
+        for name, data in reg_data.items():
+            if len(data['cis']) > 1 or len(data['clubs']) > 1:
+                if data['clubs']:
+                    dup_map[name] = sorted(list(data['clubs']))
+
     # 2. From ID map
     if id_map_df is not None and not id_map_df.empty:
         col_s80_name = next((c for c in id_map_df.columns if 'sport80_name' in str(c).lower()), None)
@@ -270,50 +284,61 @@ def build_dynamic_duplicate_map(id_map_df=None, reg_players_df=None):
         col_s80_id = next((c for c in id_map_df.columns if 'sport80_id' in str(c).lower()), None)
         col_nv_name = next((c for c in id_map_df.columns if 'nv' in str(c).lower() and 'name' in str(c).lower()), None)
         
-        df_copy = id_map_df.copy()
-        
         if col_s80_name:
-            df_copy['Norm_Name'] = df_copy[col_s80_name].fillna('').astype(str).str.strip().apply(fix_celtic_casing)
-            
-            for name, group in df_copy.groupby('Norm_Name'):
-                if not name or str(name).lower() in ['nan', 'none', '']: continue
-                unique_ids = set(str(x).replace('.0','').strip() for x in group[col_s80_id].dropna() if str(x).strip() and str(x).lower() != 'nan') if col_s80_id else set()
-                raw_clubs = set(extract_base_club_name(c) for c in group[col_s80_club].dropna() if str(c).strip() and str(c).lower() != 'nan') if col_s80_club else set()
-                unique_clubs = {c for c in raw_clubs if c.lower() not in ignored_clubs}
-                
-                if len(unique_ids) > 1 or len(unique_clubs) > 1:
+            s80_data = defaultdict(lambda: {'ids': set(), 'clubs': set()})
+            for _, r in id_map_df.iterrows():
+                val_n = r[col_s80_name]
+                if pd.isna(val_n): continue
+                n = fix_celtic_casing(str(val_n).strip())
+                if not n or n.lower() in ['nan', 'none', '']: continue
+                if col_s80_id and pd.notna(r[col_s80_id]):
+                    i_val = str(r[col_s80_id]).replace('.0', '').strip()
+                    if i_val and i_val.lower() != 'nan':
+                        s80_data[n]['ids'].add(i_val)
+                if col_s80_club and pd.notna(r[col_s80_club]):
+                    c_val = extract_base_club_name(r[col_s80_club])
+                    if c_val and c_val.lower() not in ignored_clubs and str(r[col_s80_club]).strip().lower() != 'nan':
+                        s80_data[n]['clubs'].add(c_val)
+            for name, data in s80_data.items():
+                if len(data['ids']) > 1 or len(data['clubs']) > 1:
                     existing = set(dup_map.get(name, []))
-                    existing.update(unique_clubs)
+                    existing.update(data['clubs'])
                     if existing:
                         dup_map[name] = sorted(list(existing))
 
         if col_nv_name:
-            df_copy['Norm_NV_Name'] = df_copy[col_nv_name].fillna('').astype(str).str.strip().apply(fix_celtic_casing)
-            
-            for name, group in df_copy.groupby('Norm_NV_Name'):
-                if not name or str(name).lower() in ['nan', 'none', '']: continue
-                unique_ids = set(str(x).replace('.0','').strip() for x in group[col_s80_id].dropna() if str(x).strip() and str(x).lower() != 'nan') if col_s80_id else set()
-                raw_clubs = set(extract_base_club_name(c) for c in group[col_s80_club].dropna() if str(c).strip() and str(c).lower() != 'nan') if col_s80_club else set()
-                unique_clubs = {c for c in raw_clubs if c.lower() not in ignored_clubs}
-                
-                if len(unique_ids) > 1 or len(unique_clubs) > 1:
+            nv_data = defaultdict(lambda: {'ids': set(), 'clubs': set(), 's80_names': set()})
+            for _, r in id_map_df.iterrows():
+                val_n = r[col_nv_name]
+                if pd.isna(val_n): continue
+                n = fix_celtic_casing(str(val_n).strip())
+                if not n or n.lower() in ['nan', 'none', '']: continue
+                if col_s80_id and pd.notna(r[col_s80_id]):
+                    i_val = str(r[col_s80_id]).replace('.0', '').strip()
+                    if i_val and i_val.lower() != 'nan':
+                        nv_data[n]['ids'].add(i_val)
+                if col_s80_club and pd.notna(r[col_s80_club]):
+                    c_val = extract_base_club_name(r[col_s80_club])
+                    if c_val and c_val.lower() not in ignored_clubs and str(r[col_s80_club]).strip().lower() != 'nan':
+                        nv_data[n]['clubs'].add(c_val)
+                if col_s80_name and pd.notna(r[col_s80_name]):
+                    s_n = fix_celtic_casing(str(r[col_s80_name]).strip())
+                    if s_n and s_n.lower() not in ['nan', 'none', '']:
+                        nv_data[n]['s80_names'].add(s_n)
+            for name, data in nv_data.items():
+                if len(data['ids']) > 1 or len(data['clubs']) > 1:
                     existing = set(dup_map.get(name, []))
-                    existing.update(unique_clubs)
+                    existing.update(data['clubs'])
                     if existing:
                         dup_map[name] = sorted(list(existing))
                         dup_map[name.title()] = sorted(list(existing))
                         dup_map[fix_celtic_casing(name)] = sorted(list(existing))
-                    
-                    # Also link each associated registered Sport80 name for this scorecard duplicate
-                    if col_s80_name:
-                        for s80_n in group[col_s80_name].dropna().unique():
-                            norm_s80 = fix_celtic_casing(str(s80_n).strip())
-                            if norm_s80 and norm_s80.lower() not in ['nan', 'none', '']:
-                                s80_exist = set(dup_map.get(norm_s80, []))
-                                s80_exist.update(unique_clubs)
-                                if s80_exist:
-                                    dup_map[norm_s80] = sorted(list(s80_exist))
-                                    dup_map[norm_s80.title()] = sorted(list(s80_exist))
+                    for s80_n in data['s80_names']:
+                        s80_exist = set(dup_map.get(s80_n, []))
+                        s80_exist.update(data['clubs'])
+                        if s80_exist:
+                            dup_map[s80_n] = sorted(list(s80_exist))
+                            dup_map[s80_n.title()] = sorted(list(s80_exist))
 
     # Also add standard-cased keys for casing compatibility
     for name, clubs in list(dup_map.items()):
@@ -335,17 +360,17 @@ def _init_known_duplicates():
     
     reg_df, id_df = None, None
     if os.path.exists(reg_file):
-        try: reg_df = pd.read_excel(reg_file)
+        try: reg_df = get_excel_df(reg_file)
         except Exception: pass
     elif os.path.exists(reg_file_rel):
-        try: reg_df = pd.read_excel(reg_file_rel)
+        try: reg_df = get_excel_df(reg_file_rel)
         except Exception: pass
         
     if os.path.exists(id_file):
-        try: id_df = pd.read_excel(id_file)
+        try: id_df = get_excel_df(id_file)
         except Exception: pass
     elif os.path.exists(id_file_rel):
-        try: id_df = pd.read_excel(id_file_rel)
+        try: id_df = get_excel_df(id_file_rel)
         except Exception: pass
         
     return build_dynamic_duplicate_map(id_map_df=id_df, reg_players_df=reg_df)
@@ -652,7 +677,7 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
         f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
         if f_id_map and os.path.exists(f_id_map):
             try:
-                id_map_df = pd.read_excel(f_id_map)
+                id_map_df = get_excel_df(f_id_map)
             except Exception:
                 id_map_df = None
 
@@ -682,7 +707,7 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
             target_sec = f_sec_path if os.path.exists(f_sec_path) else (f_sec if os.path.exists(f_sec) else None)
             if target_sec:
                 try:
-                    sec_df = pd.read_excel(target_sec)
+                    sec_df = get_excel_df(target_sec)
                     secondary_map = build_secondary_team_map(sec_df, alias_map)
                 except Exception:
                     secondary_map = None
@@ -967,7 +992,7 @@ def build_intra_club_team_map(search_dir=None):
     
     for f in files:
         try:
-            df = pd.read_csv(f)
+            df = get_excel_df(f)
             teams = sorted(list(df['Group'].dropna().unique()))
             if len(teams) != 2:
                 continue
@@ -1061,12 +1086,6 @@ def determine_player_team_for_row(row, player_club_map, domain, secondary_map=No
     base_p = player.split(' (')[0].strip().lower()
     mapped_p = str(alias_map.get(base_p, base_p)).strip().lower() if alias_map else base_p
     
-    if domain != "Women's":
-        if mapped_p in ['neil brand', 'sandeep singh']:
-            return t1 if 'muckamore' in t1.lower() else (t2 if 'muckamore' in t2.lower() else t1)
-        if mapped_p == 'james shannon':
-            if 'holywood' in t1.lower() or 'holywood' in t2.lower(): return t1 if 'holywood' in t1.lower() else t2
-            elif 'saintfield' in t1.lower() or 'saintfield' in t2.lower(): return t1 if 'saintfield' in t1.lower() else t2
 
     registered_clubs = set()
     known_clubs = set()
@@ -1785,25 +1804,22 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
     transfer_date = None
     transfer_club_2 = "Unknown_Club"
     transfer_date_2 = None
-    if active_player.lower() == 'neil brand' and domain != "Women's":
-        club_name = 'Muckamore'
-    else:
-        reg_search_name = active_player.split(' (')[0] if ' (' in active_player else active_player
-        reg_match = pd.DataFrame()
-        if reg_players_df is not None and not reg_players_df.empty:
-            if '_computed_name' in reg_players_df.columns:
-                reg_match = reg_players_df[reg_players_df['_computed_name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
-            elif 'Full Name' in reg_players_df.columns:
-                reg_match = reg_players_df[reg_players_df['Full Name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
-            elif 'First Name' in reg_players_df.columns and 'Last Name' in reg_players_df.columns:
-                comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Last Name'].astype(str).str.strip()).str.lower()
-                reg_match = reg_players_df[comp_names == reg_search_name.lower()]
-            elif 'First Name' in reg_players_df.columns and 'Surname' in reg_players_df.columns:
-                comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Surname'].astype(str).str.strip()).str.lower()
-                reg_match = reg_players_df[comp_names == reg_search_name.lower()]
-            else:
-                name_col = next((c for c in reg_players_df.columns if 'name' in str(c).lower()), reg_players_df.columns[0])
-                reg_match = reg_players_df[reg_players_df[name_col].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+    reg_search_name = active_player.split(' (')[0] if ' (' in active_player else active_player
+    reg_match = pd.DataFrame()
+    if reg_players_df is not None and not reg_players_df.empty:
+        if '_computed_name' in reg_players_df.columns:
+            reg_match = reg_players_df[reg_players_df['_computed_name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+        elif 'Full Name' in reg_players_df.columns:
+            reg_match = reg_players_df[reg_players_df['Full Name'].astype(str).str.strip().str.lower() == reg_search_name.lower()]
+        elif 'First Name' in reg_players_df.columns and 'Last Name' in reg_players_df.columns:
+            comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Last Name'].astype(str).str.strip()).str.lower()
+            reg_match = reg_players_df[comp_names == reg_search_name.lower()]
+        elif 'First Name' in reg_players_df.columns and 'Surname' in reg_players_df.columns:
+            comp_names = (reg_players_df['First Name'].astype(str).str.strip() + ' ' + reg_players_df['Surname'].astype(str).str.strip()).str.lower()
+            reg_match = reg_players_df[comp_names == reg_search_name.lower()]
+        else:
+            name_col = next((c for c in reg_players_df.columns if 'name' in str(c).lower()), reg_players_df.columns[0])
+            reg_match = reg_players_df[reg_players_df[name_col].astype(str).str.strip().str.lower() == reg_search_name.lower()]
 
         if not reg_match.empty:
             primary_cols = [c for c in reg_match.columns if 'Primary Club' in str(c) and 'Wylie' not in str(c)]
@@ -1849,7 +1865,7 @@ def generate_single_player_doc(active_player, player_batting, player_bowling, re
             f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
             if f_id_map and os.path.exists(f_id_map):
                 try:
-                    id_map_df = pd.read_excel(f_id_map)
+                    id_map_df = get_excel_df(f_id_map)
                 except Exception:
                     pass
 
@@ -2469,22 +2485,22 @@ def export_and_format_excel(df, writer, sheet_name):
 
 @st.cache_data(show_spinner="Running registration & starring audit...")
 def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_cup=None, f_abandoned=None, f_id_map=None, f_revenue=None):
-    registered_players = pd.read_excel(f_reg)
-    aliases = pd.read_excel(f_alias)
-    league_structure = pd.read_excel(f_league)
-    batting_stats = pd.read_excel(f_bat)
-    bowling_stats = pd.read_excel(f_bowl)
+    registered_players = get_excel_df(f_reg).copy()
+    aliases = get_excel_df(f_alias)
+    league_structure = get_excel_df(f_league)
+    batting_stats = get_excel_df(f_bat).copy()
+    bowling_stats = get_excel_df(f_bowl).copy()
 
     batting_stats['Is_Irish_Match'] = False
     bowling_stats['Is_Irish_Match'] = False
     
     if f_irish_bat and os.path.exists(f_irish_bat):
-        irish_bat = pd.read_excel(f_irish_bat)
+        irish_bat = get_excel_df(f_irish_bat).copy()
         irish_bat['Is_Irish_Match'] = True
         batting_stats = pd.concat([batting_stats, irish_bat], ignore_index=True)
         
     if f_irish_bowl and os.path.exists(f_irish_bowl):
-        irish_bowl = pd.read_excel(f_irish_bowl)
+        irish_bowl = get_excel_df(f_irish_bowl).copy()
         irish_bowl['Is_Irish_Match'] = True
         bowling_stats = pd.concat([bowling_stats, irish_bowl], ignore_index=True)
 
@@ -2518,7 +2534,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                     target_sheet = sheet
                     break
                     
-            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
             
             for _, row_data in cup_df.iterrows():
                 match_str_raw = str(row_data[0]).strip()
@@ -2560,7 +2576,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
 
     starring_df = pd.DataFrame(columns=['Rank', 'Surname', 'Forename', 'XI_Level', 'Club', 'Full Name'])
     if f_starring and os.path.exists(f_starring):
-        starring_excel = pd.read_excel(f_starring, sheet_name=None, header=None)
+        starring_excel = get_excel_sheet_df(f_starring, sheet_name=None, header=None)
         starring_data_list = []
         for club_name, df in starring_excel.items():
             try:
@@ -2582,12 +2598,12 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
     f_secondary = DEFAULT_FILES.get(domain, {}).get("secondary", "")
     secondary_map = {}
     if os.path.exists(f_secondary):
-        secondary_map = build_secondary_team_map(pd.read_excel(f_secondary), alias_map)
+        secondary_map = build_secondary_team_map(get_excel_df(f_secondary), alias_map)
     
     f_unreg = DEFAULT_FILES.get(domain, {}).get("unreg", "")
     unreg_df = None
     if os.path.exists(f_unreg):
-        unreg_df = pd.read_excel(f_unreg)
+        unreg_df = get_excel_df(f_unreg)
     if not f_revenue:
         f_revenue = DEFAULT_FILES.get(domain, {}).get("revenue") or get_default_revenue_file()
     revenue_map = {}
@@ -2606,7 +2622,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
     id_map = {}
     if f_id_map and os.path.exists(f_id_map):
-        id_map_df = pd.read_excel(f_id_map)
+        id_map_df = get_excel_df(f_id_map)
         id_map = build_id_map(id_map_df)
         
     def process_bat_row(r):
@@ -2637,7 +2653,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
         f_abandoned = DEFAULT_FILES.get(domain, {}).get("abandoned", "")
 
     if f_abandoned and os.path.exists(f_abandoned):
-        abandoned_stats = pd.read_excel(f_abandoned)
+        abandoned_stats = get_excel_df(f_abandoned).copy()
         if not abandoned_stats.empty:
             ab_match_col = 'Group' if 'Group' in abandoned_stats.columns else ('Match' if 'Match' in abandoned_stats.columns else abandoned_stats.columns[0])
             ab_name_col = 'Name' if 'Name' in abandoned_stats.columns else abandoned_stats.columns[1]
@@ -2716,18 +2732,7 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
                 base_name = player.split('(')[0].strip() if '(' in player else player.strip()
                 club_hint = player.split('(')[-1].replace(')', '').strip() if ('(' in player and player.strip().endswith(')')) else None
                 
-                if domain == "Men's" and base_name.lower() == 'james shannon':
-                    club_str = (str(team_a) + " " + str(team_b) + " " + (club_hint or "")).lower()
-                    if 'holywood' in club_str:
-                        reg_record = registered_players[(registered_players[reg_name_col].str.strip().str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Holywood', case=False, na=False))].copy()
-                        if not reg_record.empty:
-                            reg_record['Date Registered'] = pd.Timestamp(2026, 3, 5)
-                    elif 'saintfield' in club_str:
-                        reg_record = registered_players[(registered_players[reg_name_col].str.strip().str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Saintfield', case=False, na=False))]
-                    if not reg_record.empty:
-                        match_type, matched_name = "Exact (Contextual Override)", "James Shannon"
-
-                elif club_hint:
+                if club_hint:
                     potential_matches = registered_players[registered_players[reg_name_col].str.strip().str.lower() == base_name.lower()]
                     if potential_matches.empty:
                         best_match, score = process.extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
@@ -3087,12 +3092,12 @@ def run_registration_audit(domain, start_date, end_date, f_reg, f_alias, f_starr
 # ==========================================
 @st.cache_data(show_spinner="Running midweek registration audit...")
 def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=None, f_id_map=None, f_revenue=None):
-    registered_players = pd.read_excel(f_reg)
-    aliases = pd.read_excel(f_alias)
-    weekend_structure = pd.read_excel(f_weekend_league)
-    midweek_structure = pd.read_excel(f_midweek_league)
-    batting_stats = pd.read_excel(f_bat)
-    bowling_stats = pd.read_excel(f_bowl)
+    registered_players = get_excel_df(f_reg).copy()
+    aliases = get_excel_df(f_alias)
+    weekend_structure = get_excel_df(f_weekend_league)
+    midweek_structure = get_excel_df(f_midweek_league)
+    batting_stats = get_excel_df(f_bat).copy()
+    bowling_stats = get_excel_df(f_bowl).copy()
 
     reg_name_col = 'Full Name' if 'Full Name' in registered_players.columns else registered_players.columns[0]
     registered_players[reg_name_col] = registered_players[reg_name_col].astype(str).str.replace('‡', '', regex=False).str.strip()
@@ -3106,7 +3111,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
 
     starring_df = pd.DataFrame(columns=['Rank', 'Surname', 'Forename', 'XI_Level', 'Club', 'Full Name'])
     if f_starring and os.path.exists(f_starring):
-        starring_excel = pd.read_excel(f_starring, sheet_name=None, header=None)
+        starring_excel = get_excel_sheet_df(f_starring, sheet_name=None, header=None)
         starring_data_list = []
         for club_name, df in starring_excel.items():
             try:
@@ -3128,12 +3133,12 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
     f_secondary = DEFAULT_FILES.get("Midweek", {}).get("secondary", "")
     secondary_map = {}
     if os.path.exists(f_secondary):
-        secondary_map = build_secondary_team_map(pd.read_excel(f_secondary), alias_map)
+        secondary_map = build_secondary_team_map(get_excel_df(f_secondary), alias_map)
     
     f_unreg = DEFAULT_FILES.get("Midweek", {}).get("unreg", "")
     unreg_df = None
     if os.path.exists(f_unreg):
-        unreg_df = pd.read_excel(f_unreg)
+        unreg_df = get_excel_df(f_unreg)
     if not f_revenue:
         f_revenue = DEFAULT_FILES.get("Midweek", {}).get("revenue") or get_default_revenue_file()
     revenue_map = {}
@@ -3152,7 +3157,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         f_id_map = DEFAULT_FILES.get("Midweek", {}).get("id_map", "")
     id_map = {}
     if f_id_map and os.path.exists(f_id_map):
-        id_map_df = pd.read_excel(f_id_map)
+        id_map_df = get_excel_df(f_id_map)
         id_map = build_id_map(id_map_df)
         
     def process_mw_bat_row(r):
@@ -3198,7 +3203,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
         f_abandoned = DEFAULT_FILES.get("Midweek", {}).get("abandoned", "")
 
     if f_abandoned and os.path.exists(f_abandoned):
-        abandoned_stats = pd.read_excel(f_abandoned)
+        abandoned_stats = get_excel_df(f_abandoned).copy()
         if not abandoned_stats.empty:
             ab_match_col = 'Group' if 'Group' in abandoned_stats.columns else ('Match' if 'Match' in abandoned_stats.columns else abandoned_stats.columns[0])
             ab_name_col = 'Name' if 'Name' in abandoned_stats.columns else abandoned_stats.columns[1]
@@ -3256,18 +3261,7 @@ def run_midweek_registration_audit(start_date, end_date, f_reg, f_alias, f_starr
                 base_name = player.split('(')[0].strip() if '(' in player else player.strip()
                 club_hint = player.split('(')[-1].replace(')', '').strip() if ('(' in player and player.strip().endswith(')')) else None
                 
-                if domain == "Men's" and base_name.lower() == 'james shannon':
-                    club_str = (str(team_a) + " " + str(team_b) + " " + (club_hint or "")).lower()
-                    if 'holywood' in club_str:
-                        reg_record = registered_players[(registered_players[reg_name_col].str.strip().str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Holywood', case=False, na=False))].copy()
-                        if not reg_record.empty:
-                            reg_record['Date Registered'] = pd.Timestamp(2026, 3, 5)
-                    elif 'saintfield' in club_str:
-                        reg_record = registered_players[(registered_players[reg_name_col].str.strip().str.lower() == 'james shannon') & (registered_players['Individual Membership Primary Club'].str.contains('Saintfield', case=False, na=False))]
-                    if not reg_record.empty:
-                        match_type, matched_name = "Exact (Contextual Override)", "James Shannon"
-
-                elif club_hint:
+                if club_hint:
                     potential_matches = registered_players[registered_players[reg_name_col].str.strip().str.lower() == base_name.lower()]
                     if potential_matches.empty:
                         best_match, score = process.extractOne(base_name, official_names, scorer=fuzz.token_sort_ratio)
@@ -3810,21 +3804,21 @@ def report_autofit_columns(ws):
 
 @st.cache_data(show_spinner="Generating starring inactivity reports...")
 def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_bat, f_bowl, f_irish_bat=None, f_irish_bowl=None, f_abandoned=None):
-    df_reg = pd.read_excel(f_reg)
-    df_alias = pd.read_excel(f_alias)
-    df_bat = pd.read_excel(f_bat)
-    df_bowl = pd.read_excel(f_bowl)
+    df_reg = get_excel_df(f_reg)
+    df_alias = get_excel_df(f_alias)
+    df_bat = get_excel_df(f_bat).copy()
+    df_bowl = get_excel_df(f_bowl).copy()
     
     df_bat['Is_Irish_Match'] = False
     df_bowl['Is_Irish_Match'] = False
     
     if f_irish_bat and os.path.exists(f_irish_bat):
-        irish_bat = pd.read_excel(f_irish_bat)
+        irish_bat = get_excel_df(f_irish_bat).copy()
         irish_bat['Is_Irish_Match'] = True
         df_bat = pd.concat([df_bat, irish_bat], ignore_index=True)
         
     if f_irish_bowl and os.path.exists(f_irish_bowl):
-        irish_bowl = pd.read_excel(f_irish_bowl)
+        irish_bowl = get_excel_df(f_irish_bowl).copy()
         irish_bowl['Is_Irish_Match'] = True
         df_bowl = pd.concat([df_bowl, irish_bowl], ignore_index=True)
         
@@ -3833,7 +3827,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
         
     df_ab = pd.DataFrame()
     if f_abandoned and os.path.exists(f_abandoned):
-        df_ab = pd.read_excel(f_abandoned)
+        df_ab = get_excel_df(f_abandoned)
     
     international_players = ["cara murray"] if domain == "Women's" else ["mark adair", "paul stirling"]
     override_map = {"holywood 1881": "holywood"}
@@ -3844,7 +3838,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
     id_map = {}
     if f_id_map and os.path.exists(f_id_map):
         try:
-            id_map_df = pd.read_excel(f_id_map)
+            id_map_df = get_excel_df(f_id_map)
             id_map = build_id_map(id_map_df)
         except Exception:
             pass
@@ -3934,7 +3928,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
     f_league = DEFAULT_FILES[domain]["league"]
     league_dict, team_keys = {}, []
     if os.path.exists(f_league):
-        league_structure = pd.read_excel(f_league)
+        league_structure = get_excel_df(f_league)
         league_dict, team_keys, _ = build_league_dict(league_structure)
         
     f_cup = "NCU_Cup_Fixtures.xlsx"
@@ -3947,7 +3941,7 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
                 if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
                     target_sheet = sheet
                     break
-            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
             
             def local_parse(group_str):
                 try:
@@ -4042,16 +4036,16 @@ def generate_starring_inactivity_reports(domain, f_reg, f_alias, f_starring, f_b
     center_alignment = Alignment(horizontal='center', vertical='center')
 
     with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-        excel_file = pd.ExcelFile(f_starring)
+        starring_all_sheets = get_excel_sheet_df(f_starring, sheet_name=None, header=None) if f_starring and os.path.exists(f_starring) else {}
         excluded_tabs = ["summary", "overview", "sheet1"]
         
-        for sheet_name in excel_file.sheet_names:
-            if sheet_name.lower().strip() in excluded_tabs: continue
+        for sheet_name, df_stars_raw in starring_all_sheets.items():
+            if str(sheet_name).lower().strip() in excluded_tabs: continue
                 
-            club_input = sheet_name.strip()
+            club_input = str(sheet_name).strip()
             safe_club = re.sub(r'[\\/*?:"<>|]', "", club_input).replace(" ", "_")
             df_club, team_match_dates = report_build_club_matches_df(club_input, all_app, override_map, comp_map)
-            df_stars_raw = pd.read_excel(excel_file, sheet_name=sheet_name, header=None)
+            if df_stars_raw is None or df_stars_raw.empty: continue
             
             players, current_team = [], "Unassigned"
             for i in range(len(df_stars_raw)):
@@ -4237,7 +4231,7 @@ def generate_club_fines_report(audit_file, forfeit_file, start_date, end_date):
 
     if forfeit_file:
         try:
-            df_forfeit = pd.read_excel(forfeit_file)
+            df_forfeit = get_excel_df(forfeit_file)
             for _, row in df_forfeit.iterrows():
                 date_raw = row.get('Date', '')
                 team_forfeit = str(row.get('Team Forfeiting', '')).strip()
@@ -4636,11 +4630,11 @@ def generate_unregistered_fines_only(audit_file):
 # ==========================================
 @st.cache_data(show_spinner="Generating milestones report...")
 def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, f_cup=None, f_id_map=None, f_secondary=None):
-    reg_players = pd.read_excel(f_reg)
-    aliases = pd.read_excel(f_alias)
-    league_structure = pd.read_excel(f_league)
-    batting_df = pd.read_excel(f_bat)
-    bowling_df = pd.read_excel(f_bowl)
+    reg_players = get_excel_df(f_reg)
+    aliases = get_excel_df(f_alias)
+    league_structure = get_excel_df(f_league)
+    batting_df = get_excel_df(f_bat).copy()
+    bowling_df = get_excel_df(f_bowl).copy()
     
     if not f_id_map:
         f_id_map = DEFAULT_FILES.get(domain, {}).get("id_map", "")
@@ -4692,7 +4686,7 @@ def generate_milestones_report(domain, f_reg, f_alias, f_league, f_bat, f_bowl, 
                 if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
                     target_sheet = sheet
                     break
-            cup_df = pd.read_excel(f_cup, sheet_name=target_sheet, header=None)
+            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
             
             def local_parse(group_str):
                 try:
@@ -5055,19 +5049,9 @@ def parse_club_contacts_matrix(file_or_df):
 # ==========================================
 
 
-def clean_revenue_report(source_file):
-    import pandas as pd
-    import re
-    
-    # Check if this is an existing DataFrame, original raw file, or pre-filtered one
-    if isinstance(source_file, pd.DataFrame):
-        df_raw = source_file.copy()
-    else:
-        try:
-            df_raw = pd.read_excel(source_file, sheet_name='All Data')
-        except Exception:
-            df_raw = pd.read_excel(source_file)
-    
+def _parse_revenue_dataframe(df_raw):
+    if df_raw is None or df_raw.empty:
+        return pd.DataFrame()
     if 'ItemType' in df_raw.columns:
         # It's the raw Sport80 export
         df_all = df_raw[df_raw['ItemType'] == 'ADD_ON'].copy()
@@ -5080,6 +5064,9 @@ def clean_revenue_report(source_file):
         # It's already the user's manual export
         df_all = df_raw.copy()
         
+    if 'Player Name - Club - Type' not in df_all.columns:
+        return df_all
+
     col = df_all['Player Name - Club - Type']
 
     def parse_record(s):
@@ -5193,6 +5180,27 @@ def clean_revenue_report(source_file):
     })
     
     return df_clean
+
+@st.cache_data(show_spinner="Cleaning revenue report...")
+def _cached_clean_revenue_file(filepath, mtime):
+    try:
+        df_raw = get_excel_sheet_df(filepath, sheet_name='All Data')
+        if df_raw is None or df_raw.empty:
+            df_raw = get_excel_df(filepath)
+    except Exception:
+        df_raw = get_excel_df(filepath)
+    return _parse_revenue_dataframe(df_raw)
+
+def clean_revenue_report(source_file):
+    if isinstance(source_file, pd.DataFrame):
+        return _parse_revenue_dataframe(source_file.copy())
+    if isinstance(source_file, str) and os.path.exists(source_file):
+        return _cached_clean_revenue_file(source_file, os.path.getmtime(source_file)).copy()
+    try:
+        df_raw = pd.read_excel(source_file, sheet_name='All Data')
+    except Exception:
+        df_raw = pd.read_excel(source_file)
+    return _parse_revenue_dataframe(df_raw)
 
 def build_revenue_registration_map(source_file_or_df, alias_map=None):
     """
@@ -5341,7 +5349,7 @@ def generate_anomalies_word_report(df_rev, df_reg, alias_map, timestamped_prefix
     if df_dob is None:
         dob_files = sorted(glob.glob('Player_Registrations_for_2026_with_DOB*.csv'), key=os.path.getmtime, reverse=True)
         if dob_files:
-            df_dob = pd.read_csv(dob_files[0])
+            df_dob = get_excel_df(dob_files[0]).copy()
             df_dob['Full_Name'] = df_dob['First Name'].astype(str).str.strip() + ' ' + df_dob['Last Name'].astype(str).str.strip()
             df_dob['Norm_Name'] = df_dob['Full_Name'].apply(norm)
         else:
@@ -5621,8 +5629,8 @@ def run_registration_fee_audit():
     # 1. Load Aliases
     men_alias_file = '2. NCU_Validated_Aliases_Master.xlsx'
     women_alias_file = "12. NCU_Validated_Women's Aliases_Master.xlsx"
-    df_alias_m = pd.read_excel(men_alias_file)
-    df_alias_w = pd.read_excel(women_alias_file)
+    df_alias_m = get_excel_df(men_alias_file)
+    df_alias_w = get_excel_df(women_alias_file)
     df_alias = pd.concat([df_alias_m, df_alias_w], ignore_index=True)
     
     alias_map = {}
@@ -5661,7 +5669,7 @@ def run_registration_fee_audit():
     for id_file in ['NCU_Mens_Master_ID_Mapping.xlsx', 'NCU_Womens_Master_ID_Mapping.xlsx']:
         if os.path.exists(id_file):
             try:
-                df_id_map = pd.read_excel(id_file)
+                df_id_map = get_excel_df(id_file)
                 for _, r in df_id_map.iterrows():
                     nv_n = norm(r.get('NV_Play_Name', ''))
                     s80_n = str(r.get('Sport80_Name', '')).strip()
@@ -5671,7 +5679,7 @@ def run_registration_fee_audit():
                 pass
     
     # 2. 3,766 Registered Players
-    df_reg = pd.read_excel('1. NCU_Registered_Players.xlsx')
+    df_reg = get_excel_df('1. NCU_Registered_Players.xlsx').copy()
     df_reg['Full_Name'] = df_reg['First Name'].astype(str).str.strip() + ' ' + df_reg['Last Name'].astype(str).str.strip()
     df_reg['Full_Name'] = df_reg['Full_Name'].apply(smart_title)
     df_reg['Norm_Name'] = df_reg['Full_Name'].apply(norm)
@@ -5705,7 +5713,7 @@ def run_registration_fee_audit():
     if not os.path.exists(dob_files[0]):
         raise FileNotFoundError("Could not find the DOB registration report (e.g. Player_Registrations_for_2026_with_DOB*.csv)")
 
-    df_dob = pd.read_csv(dob_files[0])
+    df_dob = get_excel_df(dob_files[0]).copy()
     df_dob['Full_Name'] = df_dob['First Name'].astype(str).str.strip() + ' ' + df_dob['Last Name'].astype(str).str.strip()
     df_dob['Norm_Name'] = df_dob['Full_Name'].apply(norm)
     df_dob['DOB'] = pd.to_datetime(df_dob['Date of Birth'], errors='coerce')
@@ -5812,7 +5820,7 @@ def run_registration_fee_audit():
     
     player_matches = {}
     for fpath, comp_label, name_col, grp_col in match_files:
-        df_m = pd.read_excel(fpath).drop_duplicates(subset=[name_col, grp_col])
+        df_m = get_excel_df(fpath).drop_duplicates(subset=[name_col, grp_col])
         for _, row in df_m.iterrows():
             raw = norm(row[name_col])
             if not raw or raw == 'nan': continue
@@ -6044,7 +6052,7 @@ def run_registration_fee_audit():
     f_unreg = '4. Unregistered_Manual_Map.xlsx'
     if os.path.exists(f_unreg):
         try:
-            df_unreg_manual = pd.read_excel(f_unreg)
+            df_unreg_manual = get_excel_df(f_unreg)
             if not df_unreg_manual.empty:
                 col_p = df_unreg_manual.columns[0]
                 col_t = df_unreg_manual.columns[1]

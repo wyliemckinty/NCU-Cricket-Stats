@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 import importlib
 
 import engine as eng
-importlib.reload(eng)  # Force Python to reload engine.py on every rerun
 
 try:
     from docx import Document
@@ -298,7 +297,7 @@ if app_mode == "Player Word Doc Generator":
                             if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
 
                         alias_map = eng.build_alias_map(aliases, domain)
-                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain)
+                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, id_map_df=id_map_df)
                         
                         def resolve_duplicates(row, name_col):
                             name = str(row[name_col])
@@ -572,9 +571,10 @@ elif app_mode == "Registration Checks":
                         
                         try:
                             excel_io.seek(0)
-                            df_unreg = pd.read_excel(excel_io, sheet_name="Unregistered Matches")
-                            df_deemed = pd.read_excel(excel_io, sheet_name="Deemed Registered")
-                            df_starring_viols = pd.read_excel(excel_io, sheet_name="Starring Violations")
+                            with pd.ExcelFile(excel_io) as xf:
+                                df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
+                                df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
+                                df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
                             
                             unreg_count = len(df_unreg) if not df_unreg.empty and 'Status' not in df_unreg.columns else 0
                             deemed_count = len(df_deemed) if not df_deemed.empty and 'Status' not in df_deemed.columns else 0
@@ -657,9 +657,10 @@ elif app_mode == "Midweek Registration & Starring Check":
                         
                         try:
                             excel_io.seek(0)
-                            df_unreg = pd.read_excel(excel_io, sheet_name="Unregistered Matches")
-                            df_deemed = pd.read_excel(excel_io, sheet_name="Deemed Registered")
-                            df_starring_viols = pd.read_excel(excel_io, sheet_name="Starring Violations")
+                            with pd.ExcelFile(excel_io) as xf:
+                                df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
+                                df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
+                                df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
                             unreg_count = len(df_unreg) if not df_unreg.empty and 'Status' not in df_unreg.columns else 0
                             deemed_count = len(df_deemed) if not df_deemed.empty and 'Status' not in df_deemed.columns else 0
                             star_count = len(df_starring_viols) if not df_starring_viols.empty and 'Status' not in df_starring_viols.columns else 0

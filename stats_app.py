@@ -11,9 +11,7 @@ from datetime import datetime
 import warnings
 
 # Import shared core engine
-import importlib
 import engine as eng
-importlib.reload(eng)
 
 warnings.filterwarnings('ignore')
 
@@ -248,6 +246,53 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
     filtered_batting = batting_df[batting_df['Group'].apply(should_keep)].copy()
     filtered_bowling = bowling_df[bowling_df['Group'].apply(should_keep)].copy()
     return filtered_batting, filtered_bowling
+
+@st.cache_data(show_spinner="Computing season averages...")
+def compute_season_averages_cached(domain, include_irish, include_cup, include_t20, include_pathway, bat_sort_pref, bowl_sort_pref, file_signatures):
+    f_reg, f_alias, f_id_map, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_unreg, f_secondary = [fs[0] for fs in file_signatures]
+    
+    reg_players = get_excel_df(f_reg)
+    aliases = get_excel_df(f_alias)
+    id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
+    id_map = eng.build_id_map(id_map_df)
+    league_structure = get_excel_df(f_league)
+    batting = get_excel_df(f_bat).copy()
+    bowling = get_excel_df(f_bowl).copy()
+    
+    if domain == "Men's" and include_irish:
+        if f_irish_bat and os.path.exists(f_irish_bat): batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
+        if f_irish_bowl and os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
+
+    if domain in ["Men's", "Women's"]:
+        batting, bowling = filter_match_formats(
+            batting, bowling, f_cup, domain, include_cup, include_t20, include_pathway
+        )
+
+    unreg_df = get_excel_df(f_unreg) if f_unreg and os.path.exists(f_unreg) else None
+    sec_df = get_excel_df(f_secondary) if f_secondary and os.path.exists(f_secondary) else None
+    
+    alias_map = eng.build_alias_map(aliases, domain)
+    secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
+    league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
+    player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df, id_map_df=id_map_df, secondary_map=secondary_map)
+    player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
+    
+    bat_res = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map), axis=1)
+    batting['Cleaned Name'] = [res[0] for res in bat_res]
+    batting['Sport80_ID'] = [res[1] for res in bat_res]
+
+    bowl_res = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map), axis=1)
+    bowling['Cleaned Name'] = [res[0] for res in bowl_res]
+    bowling['Sport80_ID'] = [res[1] for res in bowl_res]
+    
+    intra_team_map = eng.get_cached_intra_club_map()
+    
+    batting_avgs, bowling_avgs = eng.calculate_averages(
+        batting, bowling, player_club_map, team_keys, league_dict, domain,
+        bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map,
+        alias_map=alias_map, intra_team_map=intra_team_map
+    )
+    return batting_avgs, bowling_avgs, original_league_order
     
 if app_mode == "Bulk Averages Calculator":
     init_threshold_store()
@@ -384,52 +429,17 @@ if app_mode == "Bulk Averages Calculator":
         else:
             with st.spinner(f"Running {domain} Averages Engine..."):
                 try:
-                    
-                    # Load datasets using cached Excel loader
-                    reg_players = get_excel_df(f_reg)
-                    aliases = get_excel_df(f_alias)
-                    id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
-                    id_map = eng.build_id_map(id_map_df)
-                    league_structure = get_excel_df(f_league)
-                    batting = get_excel_df(f_bat)
-                    bowling = get_excel_df(f_bowl)
-                    
-                    if domain == "Men's" and include_irish:
-                        if os.path.exists(f_irish_bat): batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
-                        if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
-
-                    # --- ADD THIS MATCH FORMAT FILTER ---
-                    if domain in ["Men's", "Women's"]:
-                        batting, bowling = filter_match_formats(
-                            batting, bowling, f_cup, domain, include_cup, include_t20, include_pathway
-                        )
-                    # -----------------------------------
-
-                    unreg_df = get_excel_df(f_unreg) if f_unreg and os.path.exists(f_unreg) else None
-                    sec_df = get_excel_df(f_secondary) if f_secondary and os.path.exists(f_secondary) else None
-                    
-                    alias_map = eng.build_alias_map(aliases, domain)
-                    secondary_map = eng.build_secondary_team_map(sec_df, alias_map) 
-                    league_dict, team_keys, original_league_order = eng.build_league_dict(league_structure)
-                    player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, unreg_map_df=unreg_df)
-                    player_club_map = eng.infer_unregistered_player_clubs(batting, bowling, player_club_map, min_matches=2)
-                    
-                    bat_res = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map), axis=1)
-                    batting['Cleaned Name'] = [res[0] for res in bat_res]
-                    batting['Sport80_ID'] = [res[1] for res in bat_res]
-
-                    bowl_res = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map), axis=1)
-                    bowling['Cleaned Name'] = [res[0] for res in bowl_res]
-                    bowling['Sport80_ID'] = [res[1] for res in bowl_res]
-                    
-                    intra_team_map = eng.build_intra_club_team_map()
-                    
-                    batting_avgs, bowling_avgs = eng.calculate_averages(
-                        batting, bowling, player_club_map, team_keys, league_dict, domain,
-                        bat_sort_pref, bowl_sort_pref, secondary_map=secondary_map,
-                        alias_map=alias_map, _cache_version=datetime.now().timestamp(),
-                        intra_team_map=intra_team_map
-                    )                   
+                    irish_bat_path = f_irish_bat if (domain == "Men's" and include_irish) else None
+                    irish_bowl_path = f_irish_bowl if (domain == "Men's" and include_irish) else None
+                    file_list = [f_reg, f_alias, f_id_map, f_league, f_bat, f_bowl, irish_bat_path, irish_bowl_path, f_cup, f_unreg, f_secondary]
+                    file_signatures = tuple(
+                        (f, os.path.getmtime(f) if (f and os.path.exists(f)) else 0)
+                        for f in file_list
+                    )
+                    batting_avgs, bowling_avgs, original_league_order = compute_season_averages_cached(
+                        domain, include_irish, include_cup, include_t20, include_pathway,
+                        bat_sort_pref, bowl_sort_pref, file_signatures
+                    )
                     display_league_order = []
                     for raw_league in original_league_order:
                         if domain == "Midweek": display_league_order.append(str(raw_league))
