@@ -118,8 +118,10 @@ st.markdown(f"""
 # Sidebar Navigation
 with st.sidebar:
     st.title("🏏 NCU Stats Hub")
+    if os.environ.get("TEST_MODE", "0") == "1":
+        st.warning("⚠️ **TEST MODE**\n\nUsing sample data from `test_data/`. No production files are being read or written.")
     st.header("🛠️ Navigation")
-    app_mode = st.radio("Choose a module to run:", ["Bulk Averages Calculator", "League Milestones Report"])
+    app_mode = st.radio("Choose a module to run:", ["2026 Season Summary Dashboard", "Bulk Averages Calculator", "League Milestones Report"])
     st.divider()
 
 # ==========================================
@@ -138,13 +140,13 @@ def filter_match_formats(batting_df, bowling_df, f_cup, domain, include_cup, inc
 
     if f_cup and os.path.exists(f_cup):
         try:
-            excel_file_cup = pd.ExcelFile(f_cup)
-            target_sheet = excel_file_cup.sheet_names[0]
-            for sheet in excel_file_cup.sheet_names:
+            cup_sheets = get_excel_sheet_df(f_cup, sheet_name=None, header=None)
+            target_sheet = next(iter(cup_sheets.keys())) if cup_sheets else None
+            for sheet in (cup_sheets.keys() if isinstance(cup_sheets, dict) else []):
                 if domain.lower().replace("'", "") in sheet.lower().replace("'", ""):
                     target_sheet = sheet
                     break
-            cup_df = get_excel_sheet_df(f_cup, sheet_name=target_sheet, header=None)
+            cup_df = cup_sheets.get(target_sheet, pd.DataFrame()) if (isinstance(cup_sheets, dict) and target_sheet) else pd.DataFrame()
 
             for _, row_data in cup_df.iterrows():
                 match_str_raw = str(row_data[0]).strip()
@@ -412,10 +414,10 @@ if app_mode == "Bulk Averages Calculator":
             f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"avg_league_{domain}")
             f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"avg_bat_{domain}")
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"avg_bowl_{domain}")
-            f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"avg_cup_{domain}")
+            f_cup = st.text_input("Cup Master (Excel)", value=c_files.get("cup", eng.DEFAULT_CUP_FILE), key=f"avg_cup_{domain}")
             if include_irish:
-                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="avg_irish_bat")
-                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="avg_irish_bowl")
+                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value=c_files.get("irish_bat", eng.DEFAULT_IRISH_BAT_FILE), key="avg_irish_bat")
+                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value=c_files.get("irish_bowl", eng.DEFAULT_IRISH_BOWL_FILE), key="avg_irish_bowl")
 
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🚀 Process Averages", type="primary"):
@@ -602,8 +604,8 @@ elif app_mode == "League Milestones Report":
                 f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"ms_league_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"ms_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"ms_bowl_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"ms_cup_{domain}")
-                f_secondary = st.text_input("Secondary Team Map (Excel)", value=c_files.get("secondary", "5. Secondary_Team_Map.xlsx"), key=f"ms_secondary_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value=c_files.get("cup", eng.DEFAULT_CUP_FILE), key=f"ms_cup_{domain}")
+                f_secondary = st.text_input("Secondary Team Map (Excel)", value=c_files.get("secondary", os.path.join("test_data", "5. Secondary_Team_Map.xlsx") if eng._TEST_MODE else "5. Secondary_Team_Map.xlsx"), key=f"ms_secondary_{domain}")
         
         st.divider()
         if st.button("📄 Generate Milestones Word Doc", type="primary"):
@@ -628,3 +630,9 @@ elif app_mode == "League Milestones Report":
                         )
                     except Exception as e:
                         st.error(f"An error occurred: {str(e)}")
+
+# ==========================================
+# TOOL 3: 2026 SEASON SUMMARY DASHBOARD
+# ==========================================
+elif app_mode == "2026 Season Summary Dashboard":
+    eng.render_season_summary_dashboard()

@@ -114,6 +114,7 @@ MAIN_HEADER_SIZE = "28px"
 CONFIG_FILE = "threshold_settings.json"
 
 PAGE_TITLES = {
+    "dashboard": "📊 2026 Season Summary Dashboard",
     "player_doc": "📄 Player Word Doc Generator",
     "reg_checks": "🛡️ Weekend Registration and Starring Checks",
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
@@ -196,15 +197,21 @@ st.markdown(f"""
 # ==========================================
 with st.sidebar:
     st.title("🏏 NCU Cricket Hub")
+    # TEST MODE banner — only shown when launched via Launch_Test_Suite.bat
+    if os.environ.get("TEST_MODE", "0") == "1":
+        st.warning("⚠️ **TEST MODE**\n\nUsing sample data from `test_data/`.\nNo production files are being read or written.")
+        st.divider()
+
     st.header("🛠️ Navigation")
     
     app_mode = st.radio(
         "Choose a module to run:",
         [
-            "Player Word Doc Generator", 
+            "2026 Season Summary Dashboard",
             "Registration Checks",
             "Midweek Registration & Starring Check",
             "Starring & Inactivity Reports",
+            "Player Word Doc Generator",
             "Club Contacts Directory",
         ]
     )
@@ -233,7 +240,7 @@ if app_mode == "Player Word Doc Generator":
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
                 f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"doc_league_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"doc_cup_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value=c_files.get("cup", eng.DEFAULT_CUP_FILE), key=f"doc_cup_{domain}")
         
         include_irish = False
         if domain == "Men's":
@@ -241,8 +248,8 @@ if app_mode == "Player Word Doc Generator":
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
-                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="doc_irish_bat")
-                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="doc_irish_bowl")
+                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value=c_files.get("irish_bat", eng.DEFAULT_IRISH_BAT_FILE), key="doc_irish_bat")
+                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value=c_files.get("irish_bowl", eng.DEFAULT_IRISH_BOWL_FILE), key="doc_irish_bowl")
 
         if 'doc_last_domain' not in st.session_state or st.session_state.doc_last_domain != domain:
             st.session_state.player_search_active = False
@@ -265,7 +272,7 @@ if app_mode == "Player Word Doc Generator":
 
         if st.session_state.player_search_active:
             current_query = st.session_state.player_search_query
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl]
+            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
             if f_id_map: files_to_check.append(f_id_map)
             if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
                 
@@ -370,9 +377,11 @@ if app_mode == "Player Word Doc Generator":
                                 unique_dict[k] = p_str
                         raw_unique_players = list(unique_dict.values())
                         
-                        def player_sort_key(name):
+                        def player_sort_key(name: str) -> tuple[str, str, str]:
+                            """Extract sort tuple (surname, first names, club) for player selection sorting."""
                             pure_name = name.split(' (')[0].strip()
-                            club = player_club_map.get(name.lower(), "Unknown Club").lower()
+                            mapped = alias_map.get(name.lower(), name.lower())
+                            club = player_club_map.get(mapped.lower(), "Unknown Club").lower()
                             parts = pure_name.split()
                             surname = parts[-1].lower() if len(parts) > 1 else (parts[0].lower() if parts else "")
                             firstnames = " ".join(parts[:-1]).lower() if len(parts) > 1 else ""
@@ -493,6 +502,12 @@ if app_mode == "Player Word Doc Generator":
                                 st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
 
 # ==========================================
+# 2026 SEASON SUMMARY DASHBOARD
+# ==========================================
+elif app_mode == "2026 Season Summary Dashboard":
+    eng.render_season_summary_dashboard()
+
+# ==========================================
 # TOOL 2: WEEKEND REGISTRATION CHECKS
 # ==========================================
 elif app_mode == "Registration Checks":
@@ -518,11 +533,12 @@ elif app_mode == "Registration Checks":
                 f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"reg_check_alias_{domain}")
                 f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"reg_check_id_map_{domain}")
                 f_starring = st.text_input("Starring Master (Excel)", value=c_files["starring"], key=f"reg_check_starring_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value="NCU_Cup_Fixtures.xlsx", key=f"reg_check_cup_{domain}")
+                f_cup = st.text_input("Cup Master (Excel)", value=c_files.get("cup", eng.DEFAULT_CUP_FILE), key=f"reg_check_cup_{domain}")
                 f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"reg_check_league_{domain}")
                 f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"reg_check_bat_{domain}")
                 f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"reg_check_bowl_{domain}")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"reg_check_ab_{domain}")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=c_files.get("revenue", eng.get_default_revenue_file()), key=f"reg_check_revenue_{domain}")
         
         include_irish = False
         if domain == "Men's":
@@ -530,8 +546,8 @@ elif app_mode == "Registration Checks":
             if include_irish:
                 with st.sidebar:
                     with st.expander("📁 Irish File Path Configurations", expanded=False):
-                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="reg_irish_bat")
-                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="reg_irish_bowl")
+                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value=c_files.get("irish_bat", eng.DEFAULT_IRISH_BAT_FILE), key="reg_irish_bat")
+                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value=c_files.get("irish_bowl", eng.DEFAULT_IRISH_BOWL_FILE), key="reg_irish_bowl")
 
         st.subheader("Run Audit Engine")
         if st.button("🚀 Execute Security Audit", type="primary"):
@@ -555,16 +571,21 @@ elif app_mode == "Registration Checks":
                         end_ts = pd.to_datetime(end_date)
                         
                         if domain == "Men's" and include_irish:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_irish_bat, f_irish_bowl, f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         else:
-                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                            excel_io, doc_io = eng.run_registration_audit(domain, start_ts, end_ts, f_reg, f_alias, f_starring, f_league, f_bat, f_bowl, f_cup=f_cup, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         
                         try:
-                            excel_io.seek(0)
-                            with pd.ExcelFile(excel_io) as xf:
-                                df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
-                                df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
-                                df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
+                            if hasattr(excel_io, 'dfs'):
+                                df_unreg = excel_io.dfs.get("Unregistered Matches", pd.DataFrame())
+                                df_deemed = excel_io.dfs.get("Deemed Registered", pd.DataFrame())
+                                df_starring_viols = excel_io.dfs.get("Starring Violations", pd.DataFrame())
+                            else:
+                                excel_io.seek(0)
+                                with pd.ExcelFile(excel_io) as xf:
+                                    df_unreg = xf.parse("Unregistered Matches") if "Unregistered Matches" in xf.sheet_names else pd.DataFrame()
+                                    df_deemed = xf.parse("Deemed Registered") if "Deemed Registered" in xf.sheet_names else pd.DataFrame()
+                                    df_starring_viols = xf.parse("Starring Violations") if "Starring Violations" in xf.sheet_names else pd.DataFrame()
                             
                             unreg_count = len(df_unreg) if not df_unreg.empty and 'Status' not in df_unreg.columns else 0
                             deemed_count = len(df_deemed) if not df_deemed.empty and 'Status' not in df_deemed.columns else 0
@@ -625,6 +646,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                 f_bat = st.text_input("Midweek Batting Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"]["bat"], key="mw_check_bat")
                 f_bowl = st.text_input("Midweek Bowling Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"]["bowl"], key="mw_check_bowl")
                 f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=eng.DEFAULT_FILES["Midweek"].get("abandoned", ""), key="mw_check_ab")
+                f_revenue = st.text_input("Official Revenue Report (Excel)", value=eng.DEFAULT_FILES["Midweek"].get("revenue", eng.get_default_revenue_file()), key="mw_check_revenue")
 
         st.subheader("Run Midweek Audit Engine")
         if st.button("🚀 Execute Midweek Audit", type="primary"):
@@ -642,7 +664,7 @@ elif app_mode == "Midweek Registration & Starring Check":
                     try:
                         start_ts = pd.to_datetime(start_date)
                         end_ts = pd.to_datetime(end_date)
-                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map)
+                        excel_io, doc_io = eng.run_midweek_registration_audit(start_ts, end_ts, f_reg, f_alias, f_starring, f_weekend_league, f_midweek_league, f_bat, f_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map, f_revenue=f_revenue)
                         
                         try:
                             excel_io.seek(0)
@@ -707,8 +729,8 @@ elif app_mode == "Starring & Inactivity Reports":
             f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"star_bowl_{domain}")
             f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"star_ab_{domain}")
             if domain == "Men's" and include_irish:
-                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value="Irish Competitions 2026 Batting stats.xlsx", key="star_irish_bat")
-                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value="Irish Competitions 2026 Bowling stats.xlsx", key="star_irish_bowl")
+                f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value=c_files.get("irish_bat", eng.DEFAULT_IRISH_BAT_FILE), key="star_irish_bat")
+                f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value=c_files.get("irish_bowl", eng.DEFAULT_IRISH_BOWL_FILE), key="star_irish_bowl")
 
     st.subheader("Generate Reports")
     if st.button("📦 Process All Clubs & Download ZIP", type="primary"):
@@ -755,7 +777,7 @@ elif app_mode == "Club Contacts Directory":
 
     with st.sidebar:
         with st.expander("📁 Contacts Master Configuration", expanded=False):
-            f_contacts = st.text_input("Contacts Excel File", value="2026 Season Club Contacts.xlsx", key="contacts_filepath")
+            f_contacts = st.text_input("Contacts Excel File", value=eng.DEFAULT_CONTACTS_FILE, key="contacts_filepath")
 
     if not os.path.exists(f_contacts):
         st.warning(f"⚠️ Contacts spreadsheet `{f_contacts}` was not found in the root directory. Please upload it below.")

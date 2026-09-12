@@ -8,5 +8,6 @@ openpyxl
 xlsxwriter
 pytest
 pytest-mock
+pytest-cov
 
 python-calamine

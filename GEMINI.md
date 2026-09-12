@@ -4,7 +4,10 @@
 Every time an Excel workbook (\.xlsx\) is created, modified, or updated in this workspace, apply the following 3 formatting steps to every worksheet:
 
 1. **Highlight the first row as the header row**:
-   - Set font to **bold**: \cell.font = Font(..., bold=True)   - Apply a soft accent fill: \cell.fill = PatternFill(start_color='FFFFE0', end_color='FFFFE0', fill_type='solid')\ (Light Yellow)
+   - Set font to **bold**: `cell.font = Font(..., bold=True)`
+   - Apply a professional dark navy accent fill: `cell.fill = PatternFill(start_color='1F4E78', end_color='1F4E78', fill_type='solid')` (Dark Navy Blue)
+   - Set font color to white so the text remains highly readable over the dark background: `cell.font = Font(color='FFFFFF', bold=True)`
+
 2. **Freeze the top row**:
    - Set freeze panes at row 2: \ws.freeze_panes = 'A2'\ (or \worksheet.freeze_panes(1, 0)\) so the header row remains visible when scrolling.
 3. **Make every column exactly the max width of the widest entry**:
