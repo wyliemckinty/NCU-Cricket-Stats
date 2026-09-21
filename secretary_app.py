@@ -10,6 +10,7 @@ import re
 import json
 import zipfile
 from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Set, Tuple
 import importlib
 
 import engine as eng
@@ -66,21 +67,16 @@ def format_mail_link(email_str):
     text = str(email_str).strip()
     return f'<a href="mailto:{text}" style="text-decoration:none; font-weight:600; color:#0066cc;">✉️ {text}</a>'
 
-def get_tier_group(tier):
-    t = str(tier).lower()
-    if 'official' in t:
-        return (1, "🏛️ Club Officials")
-    if any(k in t for k in ["1st xi", "2nd xi", "3rd xi", "4th xi", "5th xi", "6th xi"]) and "women" not in t and "midweek" not in t:
-        return (2, "🏏 Senior Men's Teams")
-    if "women" in t:
-        return (3, "🏏 Women's Teams")
-    if "midweek" in t:
-        return (4, "🌙 Midweek Teams")
-    if any(k in t for k in ["youth", "boys", "girls", "coach"]):
-        return (5, "👶 Youth & Coaching")
-    if "indoor" in t:
-        return (6, "🎯 Indoor Cricket")
-    return (7, "📋 Other Roles")
+NCU_ALL_CLUBS = eng.NCU_ALL_CLUBS
+NCU_CLUB_TEAMS_STATIC = eng.NCU_CLUB_TEAMS_STATIC
+NCU_CONTACT_TIER_HIERARCHY = eng.NCU_CONTACT_TIER_HIERARCHY
+
+def get_tier_group(tier: Any) -> Tuple[int, str]:
+    """
+    Classifies a club role or team tier into a standardized group order and display label.
+    Delegates directly to eng.get_tier_group.
+    """
+    return eng.get_tier_group(tier)
 
 def render_contact_grid(df_items, num_cols=3):
     """
@@ -180,17 +176,119 @@ def toggle_zero_thresholds():
 # ==========================================
 st.set_page_config(page_title="NCU Cricket Secretary Portal", page_icon="🏏", layout="wide")
 
-st.markdown(f"""
-<style>
-    h1 {{ font-size: {MAIN_HEADER_SIZE} !important; font-weight: 700; }}
-    div.stButton > button {{ white-space: nowrap !important; }}
-    div.stButton > button[kind="primary"] {{ border-radius: 8px; padding: 0.5rem 1.5rem; }}
-    div.stDownloadButton > button:first-child {{ background-color: #0066cc; color: white; border-radius: 8px; border: none; padding: 0.5rem 1.5rem; }}
-    div.stDownloadButton > button:first-child:hover {{ background-color: #0052a3; color: white; }}
-    [data-testid="stMetricValue"] {{ font-size: 1.8rem; font-weight: 700; }}
-    [data-testid="metric-container"] {{ background-color: rgba(250, 250, 250, 0.1); border: 1px solid rgba(128, 128, 128, 0.2); padding: 15px; border-radius: 10px; }}
-</style>
-""", unsafe_allow_html=True)
+def inject_custom_styles() -> None:
+    """
+    Injects standardized Streamlit CSS styling into the active runtime session.
+    Harmonizes headers, action buttons, metrics, and prevents text truncation
+    on status badges without external CSS/JS dependencies.
+    """
+    st.markdown(f"""
+    <style>
+        /* Typography & Header hierarchy */
+        h1 {{ font-size: {MAIN_HEADER_SIZE} !important; font-weight: 700; }}
+        
+        /* Action buttons & download controls */
+        div.stButton > button {{ white-space: nowrap !important; }}
+        div.stButton > button[kind="primary"] {{ border-radius: 8px; padding: 0.5rem 1.5rem; }}
+        div.stDownloadButton > button:first-child {{
+            background-color: #0066cc;
+            color: #ffffff;
+            border-radius: 8px;
+            border: none;
+            padding: 0.5rem 1.5rem;
+        }}
+        div.stDownloadButton > button:first-child:hover {{
+            background-color: #0052a3;
+            color: #ffffff;
+        }}
+        
+        /* Metric cards */
+        [data-testid="stMetricValue"] {{ font-size: 1.8rem; font-weight: 700; }}
+        [data-testid="metric-container"] {{
+            background-color: rgba(250, 250, 250, 0.1);
+            border: 1px solid rgba(128, 128, 128, 0.2);
+            padding: 15px;
+            border-radius: 10px;
+        }}
+        
+        /* Status Badges & Tag Protections: Prevents text clipping and truncation */
+        span[data-testid="stBadge"],
+        div[data-testid="stBadge"],
+        .status-badge {{
+            white-space: nowrap !important;
+            overflow: visible !important;
+            text-overflow: unset !important;
+            font-weight: 600 !important;
+            display: inline-flex !important;
+            align-items: center !important;
+        }}
+
+        /* Center alignment for DOM/HTML table headers */
+        th, th[role="columnheader"] {{
+            text-align: center !important;
+        }}
+        th.col-left, th[data-col-align="left"], td.col-left, td[data-col-align="left"] {{
+            text-align: left !important;
+        }}
+    </style>
+    """, unsafe_allow_html=True)
+
+def center_col_label(label: str, target_width: int = 12) -> str:
+    """
+    Pads a column header label symmetrically so that the text visually
+    aligns to the center of the column and mirrors centered data cells.
+    """
+    if len(label) >= target_width:
+        return f" {label} "
+    return label.center(target_width)
+
+def get_standard_column_config() -> Dict[str, Any]:
+    """
+    Constructs a centralized, standardized column configuration dictionary
+    for st.dataframe and st.data_editor across this application.
+    Centered columns have center-balanced header labels mirroring centered cells,
+    while left-aligned columns remain strictly left-aligned.
+    """
+    return {
+        "Rank": st.column_config.Column(center_col_label("Rank", 10), alignment="center", width="small"),
+        "XI_Level": st.column_config.Column(center_col_label("XI Level", 12), alignment="center", width="small"),
+        "Club": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
+        "Club Name": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
+        "Player": st.column_config.TextColumn("Player", alignment="left", width="medium"),
+        "Full Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
+        "Full_Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
+        "Starred Tier": st.column_config.Column(center_col_label("Starred Tier", 16), alignment="center", width="small"),
+        "Registered": st.column_config.TextColumn(
+            center_col_label("Registered", 14),
+            help="Official Sport80 registry verification (✔️ / ✅ Registered | ❌ Unregistered)",
+            alignment="center",
+            width="small"
+        ),
+        "Administrative Status": st.column_config.TextColumn(
+            "Administrative Status",
+            help="NCU Rule A11/A12 Roster Eligibility & De-starring Requirement status",
+            width="large",
+            alignment="left"
+        ),
+        "Compliance Status": st.column_config.TextColumn(
+            center_col_label("Compliance Status", 20),
+            help="Audit verification state",
+            alignment="center",
+            width="medium"
+        ),
+        "Eligible Appearances": st.column_config.NumberColumn(center_col_label("Eligible Appearances", 24), format="%d", alignment="center", width="small"),
+        "Total_Matches": st.column_config.NumberColumn(center_col_label("Matches Played", 18), format="%d", alignment="center", width="small"),
+        "Missed Matches": st.column_config.NumberColumn(center_col_label("Missed Matches", 18), format="%d", alignment="center", width="small"),
+        "Days Inactive": st.column_config.NumberColumn(center_col_label("Days Inactive", 16), format="%d", alignment="center", width="small"),
+        "Last Played Date": st.column_config.Column(center_col_label("Last Played Date", 20), alignment="center", width="medium"),
+        "Transfer Number": st.column_config.Column(center_col_label("Transfer Number", 18), alignment="center", width="small"),
+        "Transfer Date": st.column_config.Column(center_col_label("Transfer Date", 16), alignment="center", width="medium"),
+        "Fee Due (£)": st.column_config.NumberColumn(center_col_label("Fee Due (£)", 14), format="£%.2f", alignment="center", width="small"),
+        "Fee Infraction": st.column_config.CheckboxColumn("£25 Late Fee Infraction (>= 1 Apr)", width="medium"),
+        "Total_Paid": st.column_config.NumberColumn(center_col_label("Fee Cleared", 14), format="£%.2f", alignment="center", width="small"),
+    }
+
+inject_custom_styles()
 
 # ==========================================
 # SIDEBAR NAVIGATION
@@ -260,7 +358,7 @@ if app_mode == "Player Word Doc Generator":
             search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Joe Bloggs")
             col_btn, _ = st.columns([1.5, 4])
             with col_btn:
-                execute_search = st.button("🔍 Search Player", type="primary", use_container_width=True)
+                execute_search = st.button("🔍 Search Player", type="primary", width="stretch")
 
         if 'player_search_active' not in st.session_state:
             st.session_state.player_search_active = False
@@ -298,17 +396,7 @@ if app_mode == "Player Word Doc Generator":
 
                         alias_map = eng.build_alias_map(aliases, domain)
                         player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, id_map_df=id_map_df)
-                        
-                        def resolve_duplicates(row, name_col):
-                            name = str(row[name_col])
-                            row_team = str(row.get('Team', '')).lower()
-                            match_grp = str(row.get('Group', row.get('Match', ''))).lower()
-                            if domain == "Men's" and name in eng.KNOWN_DUPLICATES:
-                                for club in eng.KNOWN_DUPLICATES[name]:
-                                    if club.lower() in row_team or club.lower() in match_grp:
-                                        return f"{name} ({club})"
-                            return name
-                        
+
                         batting['Name'] = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map)[0], axis=1)
                         bowling['Bowler'] = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)[0], axis=1)
                         if not abandoned_df.empty:
@@ -317,8 +405,6 @@ if app_mode == "Player Word Doc Generator":
                             ab_grp_col = 'Group' if 'Group' in abandoned_df.columns else ('Match' if 'Match' in abandoned_df.columns else abandoned_df.columns[0])
                             abandoned_df['Group'] = abandoned_df[ab_grp_col].apply(lambda x: eng.doc_format_cricket_names(x, domain))
 
-                        batting['Name'] = batting.apply(lambda x: resolve_duplicates(x, 'Name'), axis=1)
-                        bowling['Bowler'] = bowling.apply(lambda x: resolve_duplicates(x, 'Bowler'), axis=1)
                         batting['Group'] = batting['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
                         bowling['Group'] = bowling['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
 
@@ -379,7 +465,7 @@ if app_mode == "Player Word Doc Generator":
                         
                         def player_sort_key(name: str) -> tuple[str, str, str]:
                             """Extract sort tuple (surname, first names, club) for player selection sorting."""
-                            pure_name = name.split(' (')[0].strip()
+                            pure_name = eng.extract_pure_player_name(name)
                             mapped = alias_map.get(name.lower(), name.lower())
                             club = player_club_map.get(mapped.lower(), "Unknown Club").lower()
                             parts = pure_name.split()
@@ -409,7 +495,8 @@ if app_mode == "Player Word Doc Generator":
                     st.error(f"No statistics found for '{current_query}'. Please try another name.")
                 else:
                     def get_club_for_player(name):
-                        if '(' in name and ')' in name: return name.split('(')[-1].replace(')', '').strip()
+                        qualifier = eng.extract_player_club_qualifier(name)
+                        if qualifier: return qualifier
                         club = st.session_state.player_club_map.get(name.lower(), None)
                         if not club or str(club).lower() in ['nan', 'none', '', 'unknown club']:
                             a_map = eng.build_alias_map(aliases_df, domain)
@@ -426,7 +513,7 @@ if app_mode == "Player Word Doc Generator":
                         return "Unknown Club"
 
                     def format_player_display(name):
-                        pure = name.split(' (')[0].strip()
+                        pure = eng.extract_pure_player_name(name)
                         club_clean = get_club_for_player(name)
                         playing_name = eng.get_player_playing_name(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                         if club_clean and str(club_clean).lower() not in ['unknown club', 'nan', 'none', '']:
@@ -435,7 +522,7 @@ if app_mode == "Player Word Doc Generator":
 
                     if len(unique_players) == 1:
                         active_player = unique_players[0]
-                        pure_registered_name = active_player.split(' (')[0].strip()
+                        pure_registered_name = eng.extract_pure_player_name(active_player)
                         club_clean = get_club_for_player(active_player)
                         p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                         st.success(f"Found Match: {format_player_display(active_player)}")
@@ -462,7 +549,7 @@ if app_mode == "Player Word Doc Generator":
                         if selected_players:
                             if len(selected_players) == 1:
                                 active_player = selected_players[0]
-                                pure_registered_name = active_player.split(' (')[0].strip()
+                                pure_registered_name = eng.extract_pure_player_name(active_player)
                                 club_clean = get_club_for_player(active_player)
                                 p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                                 p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
@@ -483,7 +570,7 @@ if app_mode == "Player Word Doc Generator":
                                 zip_buffer = io.BytesIO()
                                 with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
                                     for active_player in selected_players:
-                                        pure = active_player.split(' (')[0].strip()
+                                        pure = eng.extract_pure_player_name(active_player)
                                         club_clean = get_club_for_player(active_player)
                                         p_aliases = eng.get_player_aliases(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
                                         p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
@@ -603,11 +690,11 @@ elif app_mode == "Registration Checks":
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, use_container_width=True, hide_index=True)
+                                with st.expander("⚠️ Unregistered Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, use_container_width=True, hide_index=True)
+                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
                             if star_count > 0:
-                                with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, use_container_width=True, hide_index=True)
+                                with st.expander("🚨 Starring Violations"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -688,11 +775,11 @@ elif app_mode == "Midweek Registration & Starring Check":
                         if unreg_count > 0 or deemed_count > 0 or star_count > 0:
                             st.subheader("📋 Audit Report Previews")
                             if unreg_count > 0:
-                                with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, use_container_width=True, hide_index=True)
+                                with st.expander("⚠️ Unregistered Midweek Matches"): st.dataframe(df_unreg, width="stretch", hide_index=True)
                             if deemed_count > 0:
-                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, use_container_width=True, hide_index=True)
+                                with st.expander("ℹ️ Deemed Registered Players"): st.dataframe(df_deemed, width="stretch", hide_index=True)
                             if star_count > 0:
-                                with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, use_container_width=True, hide_index=True)
+                                with st.expander("🚨 Midweek Ceiling Violations (Junior 3 & Above Starred players)"): st.dataframe(df_starring_viols, width="stretch", hide_index=True)
 
                         st.divider()
                         zip_buffer = io.BytesIO()
@@ -798,17 +885,9 @@ elif app_mode == "Club Contacts Directory":
             "🔍 Global Directory Search"
         ])
 
-        all_clubs = sorted([c for c in df_contacts['Club'].unique() if c and c.lower() != 'nan'])
-        
-        tier_hierarchy = [
-            "All Roles & Officials",
-            "Club Official",
-            "1st XI", "2nd XI", "3rd XI", "4th XI", "5th XI", "6th XI",
-            "Women's 1st XI", "Women's 2nd XI", "Women's 3rd XI",
-            "1st Midweek XI", "2nd Midweek XI",
-            "Boys Youth", "Girls Youth", "Indoor Cricket"
-        ]
-        present_tiers = [t for t in tier_hierarchy if t == "All Roles & Officials" or t in df_contacts['Team Tier'].unique()]
+        contact_clubs = [c for c in df_contacts['Club'].unique() if c and str(c).lower() != 'nan']
+        all_clubs = sorted(list(set(contact_clubs) | set(NCU_ALL_CLUBS))) if contact_clubs else sorted(list(NCU_ALL_CLUBS))
+        present_tiers = [t for t in NCU_CONTACT_TIER_HIERARCHY if t == "All Roles & Officials" or t in df_contacts['Team Tier'].unique()]
 
         # ----------------------------------------------------
         # TAB 1: TEAM-LEVEL & CLUB FILTERS
@@ -828,6 +907,15 @@ elif app_mode == "Club Contacts Directory":
                     with st.expander(f"📍 {selected_club} Ground Locations", expanded=False):
                         for g_label, g_val in grounds.items():
                             st.markdown(f"**{g_label}:** {g_val}")
+
+                team_info = NCU_CLUB_TEAMS_STATIC.get(selected_club)
+                if team_info:
+                    with st.expander(f"🏏 {selected_club} Teams Summary ({team_info.get('total', 0)} Teams)", expanded=False):
+                        st.markdown(f"**Men's Teams:** {team_info.get('men', 0)} | **Women's Teams:** {team_info.get('women', 0)} | **Midweek Teams:** {team_info.get('midweek', 0)}")
+                        if team_info.get('women_teams'):
+                            st.markdown(f"**Women's Squads:** {', '.join(team_info['women_teams'])}")
+                        if team_info.get('mw_teams'):
+                            st.markdown(f"**Midweek Squads:** {', '.join(team_info['mw_teams'])}")
 
                 club_matches = df_contacts[df_contacts['Club'] == selected_club].sort_values(by='Role Order')
                 st.divider()
