@@ -1,5 +1,5 @@
 # ==========================================
-# app.py
+# secretary_app.py
 # ==========================================
 import streamlit as st
 import pandas as pd
@@ -11,9 +11,15 @@ import json
 import zipfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+import sys
 import importlib
+import openpyxl
 
 import engine as eng
+import starring_rules as sr
+if "pytest" not in sys.modules:
+    importlib.reload(eng)
+    importlib.reload(sr)
 
 try:
     from docx import Document
@@ -49,6 +55,13 @@ def get_club_contacts_data(filepath):
     mtime = os.path.getmtime(filepath)
     return cached_parse_club_contacts(filepath, mtime)
 
+@st.cache_resource(show_spinner="Loading match scorecard data for eligibility tracker...")
+def cached_starring_pipeline(domain, f_reg, f_alias, f_bat, f_bowl, f_abandoned, f_id_map, f_irish_bat, f_irish_bowl, mtimes):
+    return eng.build_starring_inactivity_pipeline_data(
+        domain=domain, f_reg=f_reg, f_alias=f_alias, f_bat=f_bat, f_bowl=f_bowl,
+        f_irish_bat=f_irish_bat, f_irish_bowl=f_irish_bowl, f_abandoned=f_abandoned, f_id_map=f_id_map
+    )
+
 # ==========================================
 # CONTACT LINK FORMATTERS
 # ==========================================
@@ -67,16 +80,27 @@ def format_mail_link(email_str):
     text = str(email_str).strip()
     return f'<a href="mailto:{text}" style="text-decoration:none; font-weight:600; color:#0066cc;">✉️ {text}</a>'
 
-NCU_ALL_CLUBS = eng.NCU_ALL_CLUBS
-NCU_CLUB_TEAMS_STATIC = eng.NCU_CLUB_TEAMS_STATIC
-NCU_CONTACT_TIER_HIERARCHY = eng.NCU_CONTACT_TIER_HIERARCHY
-
 def get_tier_group(tier: Any) -> Tuple[int, str]:
     """
     Classifies a club role or team tier into a standardized group order and display label.
-    Delegates directly to eng.get_tier_group.
+    Delegates directly to eng.get_tier_group for centralized category taxonomy.
     """
     return eng.get_tier_group(tier)
+
+def resolve_starring_history_path() -> Optional[str]:
+    """
+    Dynamically resolves the absolute file path for 'NCU_Club_Starring_History.xlsx'
+    across local development environments and production deployment directories.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "NCU_Club_Starring_History.xlsx"),
+        os.path.abspath("NCU_Club_Starring_History.xlsx"),
+        os.path.join(os.getcwd(), "NCU_Club_Starring_History.xlsx"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
 
 def render_contact_grid(df_items, num_cols=3):
     """
@@ -115,7 +139,12 @@ PAGE_TITLES = {
     "reg_checks": "🛡️ Weekend Registration and Starring Checks",
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
     "starring_reports": "🚨 Club Starring & Inactivity Exporter",
-    "club_contacts": "📇 Club Contacts & Officials Directory"
+    "starring_registry": "🏏 Club Starring Registry & Historical Eligibility Tracker",
+    "starring_predictor": "🔮 2027 Club Starring Predictor & Quota Modeler",
+    "milestones_report": "🏆 League Milestones Report",
+    "club_contacts": "📇 Club Contacts & Officials Directory",
+    "csv_importer": "📥 NV Play CSV Match Stats Importer",
+    "player_disambiguation": "🔗 Player Disambiguation & ID Mapping"
 }
 
 DEFAULT_THRESHOLDS = {
@@ -174,7 +203,7 @@ def toggle_zero_thresholds():
 # ==========================================
 # PAGE CONFIGURATION & STYLING
 # ==========================================
-st.set_page_config(page_title="NCU Cricket Secretary Portal", page_icon="🏏", layout="wide")
+st.set_page_config(page_title="NCU Match Secretary Portal", page_icon="🏏", layout="wide")
 
 def inject_custom_styles() -> None:
     """
@@ -254,9 +283,9 @@ def get_standard_column_config() -> Dict[str, Any]:
         "XI_Level": st.column_config.Column(center_col_label("XI Level", 12), alignment="center", width="small"),
         "Club": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
         "Club Name": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
-        "Player": st.column_config.TextColumn("Player", alignment="left", width="medium"),
-        "Full Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
-        "Full_Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
+        "Player": st.column_config.TextColumn("Player", alignment="left", width=None),
+        "Full Name": st.column_config.TextColumn("Player Name", alignment="left", width=None),
+        "Full_Name": st.column_config.TextColumn("Player Name", alignment="left", width=None),
         "Starred Tier": st.column_config.Column(center_col_label("Starred Tier", 16), alignment="center", width="small"),
         "Registered": st.column_config.TextColumn(
             center_col_label("Registered", 14),
@@ -286,6 +315,59 @@ def get_standard_column_config() -> Dict[str, Any]:
         "Fee Due (£)": st.column_config.NumberColumn(center_col_label("Fee Due (£)", 14), format="£%.2f", alignment="center", width="small"),
         "Fee Infraction": st.column_config.CheckboxColumn("£25 Late Fee Infraction (>= 1 Apr)", width="medium"),
         "Total_Paid": st.column_config.NumberColumn(center_col_label("Fee Cleared", 14), format="£%.2f", alignment="center", width="small"),
+        # Starring Predictor & Waterfall Allocation Columns
+        "Projected_Rank": st.column_config.Column(center_col_label("Rank", 10), alignment="center", width="small"),
+        "2027_Predicted_Tier": st.column_config.Column(center_col_label("2027 Projected Tier", 22), alignment="center", width="small"),
+        "2027 Projected Tier": st.column_config.Column(center_col_label("2027 Projected Tier", 22), alignment="center", width="small"),
+        "2026_Starred_Tier": st.column_config.Column(center_col_label("2026 Starred", 16), alignment="center", width="small"),
+        "2026 Starred": st.column_config.Column(center_col_label("2026 Starred", 16), alignment="center", width="small"),
+        "Role": st.column_config.TextColumn(
+            "Role",
+            help="Player primary role (e.g. 🧤 Wicket-Keeper, 🏏 All-Rounder, 🎯 Bowler, 🏏 Batter)",
+            alignment="left",
+            width=None
+        ),
+        "Status": st.column_config.TextColumn(
+            "Status",
+            help="Starring Movement / Lock Status",
+            alignment="left",
+            width=None
+        ),
+        "Primary_Team": st.column_config.Column(center_col_label("Primary Team", 16), alignment="center", width="small"),
+        "Projected_Rating": st.column_config.NumberColumn(center_col_label("Projected Rating", 18), format="%.1f", alignment="center", width="small"),
+        "Performance_Score": st.column_config.NumberColumn(center_col_label("Performance Pts", 18), format="%.1f", alignment="center", width="small"),
+        "Inertia_Bonus": st.column_config.NumberColumn(center_col_label("Inertia Bonus", 16), format="%.1f", alignment="center", width="small"),
+        "Runs": st.column_config.NumberColumn(center_col_label("Runs", 10), format="%d", alignment="center", width="small"),
+        "Wickets": st.column_config.NumberColumn(center_col_label("Wickets", 12), format="%d", alignment="center", width="small"),
+        "Catches": st.column_config.NumberColumn(center_col_label("Catches", 12), format="%d", alignment="center", width="small"),
+        "Matches": st.column_config.NumberColumn(center_col_label("Matches", 12), format="%d", alignment="center", width="small"),
+        "Maidens": st.column_config.NumberColumn(center_col_label("Maidens", 12), format="%d", alignment="center", width="small"),
+        "Runs_Conceded": st.column_config.NumberColumn(center_col_label("Runs Conceded", 16), format="%d", alignment="center", width="small"),
+        "50s": st.column_config.NumberColumn(center_col_label("50s", 10), format="%d", alignment="center", width="small"),
+        "100s": st.column_config.NumberColumn(center_col_label("100s", 10), format="%d", alignment="center", width="small"),
+        "5W": st.column_config.NumberColumn(center_col_label("5W", 8), format="%d", alignment="center", width="small"),
+        "Stumpings": st.column_config.NumberColumn(center_col_label("Stumpings", 12), format="%d", alignment="center", width="small"),
+        "Tier": st.column_config.Column(center_col_label("Tier", 10), alignment="center", width="small"),
+        "Opposition": st.column_config.TextColumn("Opposition", alignment="left", width=None),
+        "Date": st.column_config.Column(center_col_label("Date", 14), alignment="center", width="small"),
+        "Comp": st.column_config.Column(center_col_label("Competition", 14), alignment="center", width="small"),
+        # In-Season Roster Realism & Performance Audit Columns
+        "Current Starred Tier": st.column_config.Column(center_col_label("Current Starred Tier", 22), alignment="center", width="medium"),
+        "Current Tier": st.column_config.Column(center_col_label("Current Tier", 16), alignment="center", width="medium"),
+        "Recommended Tier": st.column_config.Column(center_col_label("Recommended Tier", 18), alignment="center", width="medium"),
+        "Alert": st.column_config.TextColumn(
+            "Alert Tracking",
+            help="Roster Realism & Smurfing Alerts",
+            alignment="left",
+            width="large"
+        ),
+        "Promotion Path": st.column_config.TextColumn("Promotion Cascade Path", alignment="left", width="large"),
+        "Breach Reasons": st.column_config.TextColumn("Ceiling Breaches", alignment="left", width="large"),
+        "Details": st.column_config.TextColumn("Audit Details", alignment="left", width="large"),
+        "Bat Avg": st.column_config.NumberColumn(center_col_label("Bat Avg", 12), format="%.1f", alignment="center", width="small"),
+        "SR": st.column_config.NumberColumn(center_col_label("SR (%)", 12), format="%.1f%%", alignment="center", width="small"),
+        "Bowl Avg": st.column_config.NumberColumn(center_col_label("Bowl Avg", 12), format="%.1f", alignment="center", width="small"),
+        "Econ": st.column_config.NumberColumn(center_col_label("Econ", 10), format="%.2f", alignment="center", width="small"),
     }
 
 inject_custom_styles()
@@ -294,7 +376,7 @@ inject_custom_styles()
 # SIDEBAR NAVIGATION
 # ==========================================
 with st.sidebar:
-    st.title("🏏 NCU Cricket Hub")
+    st.title("🏏 NCU Match Secretary Portal")
     # TEST MODE banner — only shown when launched via Launch_Test_Suite.bat
     if os.environ.get("TEST_MODE", "0") == "1":
         st.warning("⚠️ **TEST MODE**\n\nUsing sample data from `test_data/`.\nNo production files are being read or written.")
@@ -305,299 +387,19 @@ with st.sidebar:
     app_mode = st.radio(
         "Choose a module to run:",
         [
-            "2026 Season Summary Dashboard",
-            "Registration Checks",
-            "Midweek Registration & Starring Check",
-            "Starring & Inactivity Reports",
-            "Player Word Doc Generator",
-            "Club Contacts Directory",
+            "Weekend Registration Audits",
+            "Midweek Registration Audits",
+            "Club Starring Lookup",
+            "Inactivity Warnings & Absences",
+            "Ground Locations & Contact Directory",
         ]
     )
     st.divider()
 
 # ==========================================
-# TOOL 1: WORD DOC GENERATOR
+# MODULE 1: WEEKEND REGISTRATION AUDITS
 # ==========================================
-if app_mode == "Player Word Doc Generator":
-    st.title(PAGE_TITLES["player_doc"])
-    
-    if not DOCX_AVAILABLE:
-        st.error("The `python-docx` library is not installed. Please run `pip install python-docx` to use this feature.")
-    else:
-        st.info("💡 **Tip:** This utility extracts match-by-match stats and builds a formatted season report ready for print.")
-        st.subheader("Select League Domain")
-        domain = st.radio("Choose the dataset domain to search:", ["Men's", "Women's", "Midweek"], horizontal=True)
-
-        with st.sidebar:
-            c_files = eng.DEFAULT_FILES[domain]
-            with st.expander("📁 File Path Configurations", expanded=False):
-                f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"doc_reg_{domain}")
-                f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"doc_alias_{domain}")
-                f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"doc_id_map_{domain}")
-                f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"doc_bat_{domain}")
-                f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"doc_bowl_{domain}")
-                f_abandoned = st.text_input("Abandoned Games Stats (Excel)", value=c_files.get("abandoned", ""), key=f"doc_ab_{domain}")
-                f_league = st.text_input("League Structure (Excel)", value=c_files["league"], key=f"doc_league_{domain}")
-                f_cup = st.text_input("Cup Master (Excel)", value=c_files.get("cup", eng.DEFAULT_CUP_FILE), key=f"doc_cup_{domain}")
-        
-        include_irish = False
-        if domain == "Men's":
-            include_irish = st.toggle("Include Irish Competitions in Player Report?", value=False)
-            if include_irish:
-                with st.sidebar:
-                    with st.expander("📁 Irish File Path Configurations", expanded=False):
-                        f_irish_bat = st.text_input("Irish Batting Stats (Excel)", value=c_files.get("irish_bat", eng.DEFAULT_IRISH_BAT_FILE), key="doc_irish_bat")
-                        f_irish_bowl = st.text_input("Irish Bowling Stats (Excel)", value=c_files.get("irish_bowl", eng.DEFAULT_IRISH_BOWL_FILE), key="doc_irish_bowl")
-
-        if 'doc_last_domain' not in st.session_state or st.session_state.doc_last_domain != domain:
-            st.session_state.player_search_active = False
-            st.session_state.doc_last_domain = domain
-
-        with st.container(border=True):
-            st.subheader("🔍 Search Player Database")
-            search_query = st.text_input("Enter the player's full name or scorecard alias:", placeholder="e.g., Joe Bloggs")
-            col_btn, _ = st.columns([1.5, 4])
-            with col_btn:
-                execute_search = st.button("🔍 Search Player", type="primary", width="stretch")
-
-        if 'player_search_active' not in st.session_state:
-            st.session_state.player_search_active = False
-
-        if execute_search:
-            st.session_state.player_search_active = True
-            st.session_state.player_search_query = search_query
-            st.session_state.data_loaded = False 
-
-        if st.session_state.player_search_active:
-            current_query = st.session_state.player_search_query
-            files_to_check = [f_reg, f_alias, f_bat, f_bowl, f_league, f_cup]
-            if f_id_map: files_to_check.append(f_id_map)
-            if domain == "Men's" and include_irish: files_to_check.extend([f_irish_bat, f_irish_bowl])
-                
-            missing_files = [f for f in files_to_check if not os.path.exists(f)]
-            if missing_files:
-                st.error(f"Cannot find the following files:\n\n" + "\n".join([f"- {f}" for f in missing_files]))
-            elif not current_query:
-                st.warning("Please enter a player name to search.")
-            else:
-                if not st.session_state.get('data_loaded'):
-                    with st.spinner("Searching datasets and building options..."):
-                        reg_players = get_excel_df(f_reg)
-                        aliases = get_excel_df(f_alias)
-                        id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else pd.DataFrame()
-                        id_map = eng.build_id_map(id_map_df)
-                        batting = get_excel_df(f_bat)
-                        bowling = get_excel_df(f_bowl)
-                        abandoned_df = get_excel_df(f_abandoned) if f_abandoned and os.path.exists(f_abandoned) else pd.DataFrame()
-                        
-                        if domain == "Men's" and include_irish:
-                            if os.path.exists(f_irish_bat): batting = pd.concat([batting, get_excel_df(f_irish_bat)], ignore_index=True)
-                            if os.path.exists(f_irish_bowl): bowling = pd.concat([bowling, get_excel_df(f_irish_bowl)], ignore_index=True)
-
-                        alias_map = eng.build_alias_map(aliases, domain)
-                        player_club_map = eng.build_player_club_map(reg_players, alias_map, domain, id_map_df=id_map_df)
-
-                        batting['Name'] = batting.apply(lambda r: eng.resolve_player_from_row(r, r['Name'], id_map, alias_map, player_club_map)[0], axis=1)
-                        bowling['Bowler'] = bowling.apply(lambda r: eng.resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)[0], axis=1)
-                        if not abandoned_df.empty:
-                            ab_name_col = 'Name' if 'Name' in abandoned_df.columns else abandoned_df.columns[1]
-                            abandoned_df['Cleaned Name'] = abandoned_df.apply(lambda r: eng.resolve_player_from_row(r, r[ab_name_col], id_map, alias_map, player_club_map)[0], axis=1)
-                            ab_grp_col = 'Group' if 'Group' in abandoned_df.columns else ('Match' if 'Match' in abandoned_df.columns else abandoned_df.columns[0])
-                            abandoned_df['Group'] = abandoned_df[ab_grp_col].apply(lambda x: eng.doc_format_cricket_names(x, domain))
-
-                        batting['Group'] = batting['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
-                        bowling['Group'] = bowling['Group'].apply(lambda x: eng.doc_format_cricket_names(x, domain))
-
-                        clean_q = current_query.strip().lower()
-                        target_official_names = set()
-
-                        if 'Input Name (Scorecard/Stats)' in aliases.columns and 'Official Registered Name' in aliases.columns:
-                            alias_matches = aliases[
-                                aliases['Input Name (Scorecard/Stats)'].astype(str).str.contains(clean_q, case=False, na=False) |
-                                aliases['Official Registered Name'].astype(str).str.contains(clean_q, case=False, na=False)
-                            ]
-                            target_official_names.update(alias_matches['Official Registered Name'].dropna().astype(str).str.strip().tolist())
-                        else:
-                            for _, row in aliases.iterrows():
-                                if clean_q in str(row.iloc[0]).lower() or clean_q in str(row.iloc[1]).lower():
-                                    target_official_names.add(str(row.iloc[1]).strip())
-
-                        if 'Full Name' in reg_players.columns:
-                            reg_matches = reg_players[reg_players['Full Name'].astype(str).str.contains(clean_q, case=False, na=False)]
-                            target_official_names.update(reg_matches['Full Name'].dropna().astype(str).str.strip().tolist())
-
-                        if id_map_df is not None and not id_map_df.empty:
-                            if 'NV_Play_Name' in id_map_df.columns and 'Sport80_Name' in id_map_df.columns:
-                                id_matches = id_map_df[
-                                    id_map_df['NV_Play_Name'].astype(str).str.contains(clean_q, case=False, na=False) |
-                                    id_map_df['Sport80_Name'].astype(str).str.contains(clean_q, case=False, na=False)
-                                ]
-                                target_official_names.update(id_matches['Sport80_Name'].dropna().astype(str).str.strip().tolist())
-
-                        bat_direct = batting[batting['Name'].astype(str).str.contains(clean_q, case=False, na=False)]['Name'].unique().tolist()
-                        bowl_direct = bowling[bowling['Bowler'].astype(str).str.contains(clean_q, case=False, na=False)]['Bowler'].unique().tolist()
-                        target_official_names.update(bat_direct + bowl_direct)
-
-                        matched_batting_list, matched_bowling_list, matched_abandoned_list = [], [], []
-                        for off_name in target_official_names:
-                            matched_batting_list.append(batting[batting['Name'].astype(str).str.contains(off_name, case=False, na=False)])
-                            matched_bowling_list.append(bowling[bowling['Bowler'].astype(str).str.contains(off_name, case=False, na=False)])
-                            if not abandoned_df.empty:
-                                matched_abandoned_list.append(abandoned_df[abandoned_df['Cleaned Name'].astype(str).str.contains(off_name, case=False, na=False)])
-
-                        matched_batting = pd.concat(matched_batting_list) if matched_batting_list else pd.DataFrame()
-                        matched_bowling = pd.concat(matched_bowling_list) if matched_bowling_list else pd.DataFrame()
-                        matched_abandoned = pd.concat(matched_abandoned_list) if matched_abandoned_list else pd.DataFrame()
-
-                        if not matched_batting.empty: matched_batting = matched_batting[~matched_batting.index.duplicated(keep='first')].reset_index(drop=True)
-                        if not matched_bowling.empty: matched_bowling = matched_bowling[~matched_bowling.index.duplicated(keep='first')].reset_index(drop=True)
-
-                        found_batters = matched_batting['Name'].dropna().unique().tolist() if not matched_batting.empty else []
-                        found_bowlers = matched_bowling['Bowler'].dropna().unique().tolist() if not matched_bowling.empty else []
-                        found_ab = matched_abandoned['Cleaned Name'].dropna().unique().tolist() if not matched_abandoned.empty else []
-                        unique_dict = {}
-                        for p in (found_batters + found_bowlers + found_ab):
-                            p_str = str(p).strip()
-                            k = p_str.lower()
-                            if k not in unique_dict or ('Jnr' in p_str or 'Snr' in p_str):
-                                unique_dict[k] = p_str
-                        raw_unique_players = list(unique_dict.values())
-                        
-                        def player_sort_key(name: str) -> tuple[str, str, str]:
-                            """Extract sort tuple (surname, first names, club) for player selection sorting."""
-                            pure_name = eng.extract_pure_player_name(name)
-                            mapped = alias_map.get(name.lower(), name.lower())
-                            club = player_club_map.get(mapped.lower(), "Unknown Club").lower()
-                            parts = pure_name.split()
-                            surname = parts[-1].lower() if len(parts) > 1 else (parts[0].lower() if parts else "")
-                            firstnames = " ".join(parts[:-1]).lower() if len(parts) > 1 else ""
-                            return (surname, firstnames, club)
-                            
-                        st.session_state.matched_batting = matched_batting
-                        st.session_state.matched_bowling = matched_bowling
-                        st.session_state.matched_abandoned = matched_abandoned
-                        st.session_state.unique_players = sorted(raw_unique_players, key=player_sort_key)
-                        st.session_state.reg_players = reg_players
-                        st.session_state.aliases_df = aliases
-                        st.session_state.player_club_map = player_club_map
-                        st.session_state.id_map_df = id_map_df
-                        st.session_state.data_loaded = True
-
-                matched_batting = st.session_state.matched_batting
-                matched_bowling = st.session_state.matched_bowling
-                matched_abandoned = st.session_state.matched_abandoned
-                unique_players = st.session_state.unique_players
-                reg_players = st.session_state.reg_players
-                aliases_df = st.session_state.aliases_df
-                id_map_df = st.session_state.get('id_map_df', None)
-
-                if matched_batting.empty and matched_bowling.empty and matched_abandoned.empty:
-                    st.error(f"No statistics found for '{current_query}'. Please try another name.")
-                else:
-                    def get_club_for_player(name):
-                        qualifier = eng.extract_player_club_qualifier(name)
-                        if qualifier: return qualifier
-                        club = st.session_state.player_club_map.get(name.lower(), None)
-                        if not club or str(club).lower() in ['nan', 'none', '', 'unknown club']:
-                            a_map = eng.build_alias_map(aliases_df, domain)
-                            mapped = a_map.get(name.lower(), name.lower())
-                            club = st.session_state.player_club_map.get(mapped.lower(), None)
-                        if club and str(club).lower() not in ['nan', 'none', '', 'unknown club']:
-                            return str(club).replace(" Cricket Club", "").replace(" CC", "").strip()
-                            
-                        p_bat = matched_batting[matched_batting['Name'] == name] if not matched_batting.empty else None
-                        p_bowl = matched_bowling[matched_bowling['Bowler'] == name] if not matched_bowling.empty else None
-                        inferred = eng.infer_player_club(name, p_bat, p_bowl, domain)
-                        if inferred != "Unknown_Club": return inferred
-                        
-                        return "Unknown Club"
-
-                    def format_player_display(name):
-                        pure = eng.extract_pure_player_name(name)
-                        club_clean = get_club_for_player(name)
-                        playing_name = eng.get_player_playing_name(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                        if club_clean and str(club_clean).lower() not in ['unknown club', 'nan', 'none', '']:
-                            return f"{playing_name} ({club_clean})"
-                        return playing_name
-
-                    if len(unique_players) == 1:
-                        active_player = unique_players[0]
-                        pure_registered_name = eng.extract_pure_player_name(active_player)
-                        club_clean = get_club_for_player(active_player)
-                        p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                        st.success(f"Found Match: {format_player_display(active_player)}")
-                        
-                        p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
-                        p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
-                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
-                        
-                        league_df = get_excel_df(f_league)
-                        cup_df = get_excel_df(f_cup)
-                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
-                            league_dict = dict(zip(league_df['Team'], league_df['League']))
-                        else:
-                            league_dict = None
-
-                        playing_name = eng.get_player_playing_name(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
-                        st.download_button("📥 Download Player Word Document", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary")
-                    else:
-                        st.warning(f"Multiple players match '{current_query}'. Please select the players to generate reports for.")
-                        select_all = st.toggle("Select all players")
-                        selected_players = st.multiselect("Select players:", options=unique_players, default=unique_players if select_all else [], format_func=format_player_display)
-                        
-                        if selected_players:
-                            if len(selected_players) == 1:
-                                active_player = selected_players[0]
-                                pure_registered_name = eng.extract_pure_player_name(active_player)
-                                club_clean = get_club_for_player(active_player)
-                                p_aliases = eng.get_player_aliases(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
-                                p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
-                                p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
-                                
-                                league_df = get_excel_df(f_league)
-                                cup_df = get_excel_df(f_cup)
-                                if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
-                                    league_dict = dict(zip(league_df['Team'], league_df['League']))
-                                else:
-                                    league_dict = None
-
-                                playing_name = eng.get_player_playing_name(pure_registered_name, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
-                                st.download_button(f"📥 Download Report for {format_player_display(active_player)}", data=doc_io.getvalue(), file_name=filename, mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document", type="primary", key="dl_single_multi")
-                            else:
-                                zip_buffer = io.BytesIO()
-                                with zipfile.ZipFile(zip_buffer, "a", zipfile.ZIP_DEFLATED, False) as zip_file:
-                                    for active_player in selected_players:
-                                        pure = eng.extract_pure_player_name(active_player)
-                                        club_clean = get_club_for_player(active_player)
-                                        p_aliases = eng.get_player_aliases(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                        p_bat = matched_batting[matched_batting['Name'].astype(str).str.lower() == active_player.lower()] if not matched_batting.empty else pd.DataFrame()
-                                        p_bowl = matched_bowling[matched_bowling['Bowler'].astype(str).str.lower() == active_player.lower()] if not matched_bowling.empty else pd.DataFrame()
-                                        p_ab = matched_abandoned[matched_abandoned['Cleaned Name'].astype(str).str.lower() == active_player.lower()] if not matched_abandoned.empty else pd.DataFrame()
-                                        playing_name = eng.get_player_playing_name(pure, aliases=aliases_df, id_map_df=id_map_df, club=club_clean)
-                                        league_df = get_excel_df(f_league)
-                                        cup_df = get_excel_df(f_cup)
-                                        if not league_df.empty and 'Team' in league_df.columns and 'League' in league_df.columns:
-                                            league_dict = dict(zip(league_df['Team'], league_df['League']))
-                                        else:
-                                            league_dict = None
-                                        doc_io, filename = eng.generate_single_player_doc(active_player, p_bat, p_bowl, reg_players, domain, aliases_list=p_aliases, player_abandoned=p_ab, league_dict=league_dict, cup_df=cup_df, id_map_df=id_map_df, playing_name=playing_name)
-                                        zip_file.writestr(filename, doc_io.getvalue())
-                                        
-                                st.download_button(f"📦 Download Reports for {len(selected_players)} Players (ZIP)", data=zip_buffer.getvalue(), file_name=f"Player_Reports_{current_query.replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.zip", mime="application/zip", type="primary", key="dl_zip_multi")
-
-# ==========================================
-# 2026 SEASON SUMMARY DASHBOARD
-# ==========================================
-elif app_mode == "2026 Season Summary Dashboard":
-    eng.render_season_summary_dashboard()
-
-# ==========================================
-# TOOL 2: WEEKEND REGISTRATION CHECKS
-# ==========================================
-elif app_mode == "Registration Checks":
+if app_mode == "Weekend Registration Audits":
     st.title(PAGE_TITLES["reg_checks"])
     st.markdown("Automate weekend audits by cross-referencing match logs against master registries and starring lists.")
     
@@ -709,9 +511,9 @@ elif app_mode == "Registration Checks":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 3: MIDWEEK LEAGUE REGISTRATION CHECKS
+# MODULE 2: MIDWEEK REGISTRATION AUDITS
 # ==========================================
-elif app_mode == "Midweek Registration & Starring Check":
+elif app_mode == "Midweek Registration Audits":
     st.title(PAGE_TITLES["midweek_checks"])
     st.markdown("Automate Midweek audits, enforcing the strict Junior League 3 weekend ceiling logic.")
     
@@ -793,9 +595,603 @@ elif app_mode == "Midweek Registration & Starring Check":
                         st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 4: STARRING & INACTIVITY REPORTS
+# MODULE 3: CLUB STARRING LOOKUP
 # ==========================================
-elif app_mode == "Starring & Inactivity Reports":
+elif app_mode == "Club Starring Lookup":
+    st.title(PAGE_TITLES["starring_registry"])
+    st.markdown("Automated validation and administrative tracking engine based on official **NCU Rules A10–A14**.")
+
+    st.subheader("Select Dataset Domain & Club")
+    col_sel1, col_sel2 = st.columns([1, 2])
+    with col_sel1:
+        domain = st.radio("Choose domain:", ["Men's", "Women's"], horizontal=True, key="registry_domain")
+
+    c_files = eng.DEFAULT_FILES[domain]
+    f_reg = c_files.get("reg", "")
+    f_alias = c_files.get("alias", "")
+    f_starring = c_files.get("starring", "")
+    f_bat = c_files.get("bat", "")
+    f_bowl = c_files.get("bowl", "")
+
+    # Load starring lists
+    starring_df = pd.DataFrame()
+    parsed_club_dict = {}
+    if f_starring and os.path.exists(f_starring):
+        starring_df, parsed_club_dict = eng.cached_parse_starring_data(f_starring, os.path.getmtime(f_starring))
+
+    available_clubs = sorted(list(parsed_club_dict.keys())) if parsed_club_dict else sorted(list(eng.NCU_ALL_CLUBS))
+
+    with col_sel2:
+        selected_club = st.selectbox(
+            "Select Club:",
+            options=available_clubs,
+            index=0 if available_clubs else None,
+            key=f"registry_club_select_{domain}"
+        )
+
+    club_star_df = parsed_club_dict.get(selected_club, pd.DataFrame()) if selected_club else pd.DataFrame()
+
+    # Determine automated senior team count
+    all_club_counts = eng.get_all_club_team_counts()
+    auto_num_teams = sr.get_club_senior_team_count(
+        club_name=selected_club,
+        domain=domain,
+        club_starring_df=club_star_df,
+        all_club_counts=all_club_counts
+    )
+
+    # Tabs for the 3 main rule components
+    is_womens = "women" in domain.lower()
+    rule_code = "Rule WA10" if is_womens else "Rule A10"
+    tab_a10, tab_a11, tab_a13 = st.tabs([
+        f"📋 {rule_code}: Quota Checker",
+        "⏱️ Rule A11 & A12: Absence & Eligibility",
+        "🔄 Rule A13: Transfer Monitor & Finance Link"
+    ])
+
+    # ----------------------------------------------------
+    # TAB 1: RULE A10 / WA10 AUTOMATIC QUOTA CHECKER
+    # ----------------------------------------------------
+    with tab_a10:
+        st.subheader(f"📋 {rule_code}: Automatic Starring Quota Enforcer")
+        if is_womens:
+            st.markdown(
+                "Enforces exact starring slots per tier based on the club's total team count according to **Rule WA10**. "
+                "Clubs with 2 teams field 7 starred players for 1st XI; clubs with 3 teams field 7 for 1st XI and 9 for 2nd XI; "
+                "clubs with 4 teams field 7 for 1st XI, 9 for 2nd XI, and 11 for 3rd XI."
+            )
+        else:
+            st.markdown(
+                "Enforces exact starring slots per tier based on the club's total team count. "
+                "Clubs with 2 teams field 8 starred players for 1st XI; clubs with 3+ teams complete upper tiers and star downstream."
+            )
+
+        c_q1, c_q2 = st.columns([1.5, 3])
+        with c_q1:
+            st.metric(
+                label="Total Senior Teams Fielded",
+                value=f"{auto_num_teams} Teams",
+                delta="Auto-Detected",
+                delta_color="normal",
+                help=f"Automatically calculated for {selected_club} from NCU League Structure and starring records."
+            )
+            min_override = 1 if is_womens else 2
+            max_override = 4 if is_womens else 6
+            val_override = max(min_override, min(int(auto_num_teams), max_override))
+            with st.expander("⚙️ Override Team Count"):
+                num_teams_override = st.number_input(
+                    "Simulate / Override Count:",
+                    min_value=min_override,
+                    max_value=max_override,
+                    value=val_override,
+                    step=1,
+                    key=f"a10_num_teams_{domain}_{selected_club}"
+                )
+            num_teams = num_teams_override
+        with c_q2:
+            if is_womens:
+                if num_teams == 2:
+                    tier_expl = "2 Teams: First 7 players normally selected for 1st XI (Rule WA10(a)). Automatic starring applies to NCU Senior / Future Series (inc. Ireland U17) reps (≥2 times in past 12 mos)."
+                elif num_teams == 3:
+                    tier_expl = "3 Teams: 1st XI: 7; 2nd XI: 4 remaining 1st XI + first 5 normally selected for 2nd XI = 9 players (Rule WA10(b))."
+                elif num_teams >= 4:
+                    tier_expl = "4 Teams: 1st XI: 7; 2nd XI: 9; 3rd XI: Next 6 from 2nd XI + first 5 normally selected for 3rd XI = 11 players (Rule WA10(c))."
+                else:
+                    tier_expl = "1 Team: No starring quotas required."
+                st.info(f"**Rule WA10 Tier Rules for {num_teams} Teams:** {tier_expl}")
+            else:
+                st.info(
+                    f"**Rule A10 Tier Rules for {num_teams} Teams:** "
+                    + ("2 Teams: Exactly 8 for 1st XI." if num_teams == 2 else "")
+                    + ("3 Teams: 3 remaining 1st XI + 7 for 2nd XI (1st XI: 8, 2nd XI: 10)." if num_teams == 3 else "")
+                    + ("4 Teams: Next 3 from 2nd XI + 5 for 3rd XI (1st XI: 8, 2nd XI: 10, 3rd XI: 8)." if num_teams == 4 else "")
+                    + ("5 Teams: Next 5 from 3rd XI + 2 for 4th XI (1st XI: 8, 2nd XI: 10, 3rd XI: 8, 4th XI: 7)." if num_teams == 5 else "")
+                    + ("6 Teams: Next 7 from 4th XI for 5th XI (1st XI: 8, 2nd XI: 10, 3rd XI: 8, 4th XI: 7, 5th XI: 7)." if num_teams >= 6 else "")
+                )
+
+        quota_validation = sr.validate_club_starring_quotas(club_star_df, num_teams, domain=domain)
+
+        # Display status indicators
+        st.markdown("#### 🎯 Starring Slot Quota Fulfillment")
+        q_cols = st.columns(len(quota_validation)) if quota_validation else [st.container()]
+        all_complete = True
+        for idx, (tier, q_data) in enumerate(quota_validation.items()):
+            if not q_data["is_complete"]:
+                all_complete = False
+            with q_cols[idx]:
+                delta_str = "Complete" if q_data["is_complete"] else (f"Short {abs(q_data['delta'])}" if q_data["delta"] < 0 else f"+{q_data['delta']} Over")
+                delta_color = "normal" if q_data["is_complete"] else "inverse"
+                st.metric(
+                    label=f"{tier} Quota",
+                    value=f"{q_data['actual']} / {q_data['expected']}",
+                    delta=delta_str,
+                    delta_color=delta_color
+                )
+                st.caption(f"Status: **{q_data['status_label']}**")
+
+        if all_complete and quota_validation:
+            st.success(f"✅ All starring quotas for **{selected_club}** are 100% compliant with {rule_code} ({sum(q['actual'] for q in quota_validation.values())} total starred players).")
+        elif not all_complete:
+            st.warning(f"⚠️ Quota discrepancy detected for **{selected_club}**. Adjust rosters to satisfy {rule_code} quotas.")
+
+        st.markdown("#### 👥 Current Starred Roster Breakdown")
+        if not club_star_df.empty:
+            df_reg_all = eng.get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame()
+            df_alias = eng.get_excel_df(f_alias) if f_alias and os.path.exists(f_alias) else pd.DataFrame()
+            alias_map = eng.build_alias_map(df_alias, domain) if not df_alias.empty else {}
+
+            starred_display_df = sr.check_starred_roster_registration(club_star_df, df_reg_all, alias_map)
+            starred_display_df = sr.sort_starring_roster_dataframe(starred_display_df)
+            disp_star_cols = [c for c in ["Rank", "Surname", "Forename", "XI_Level", "Full Name", "Registered"] if c in starred_display_df.columns]
+
+            total_starred = len(starred_display_df)
+            reg_count = sum(1 for v in starred_display_df["Registered"] if v in ["✅", "✔️"])
+            unreg_count = total_starred - reg_count
+
+            if unreg_count > 0:
+                st.warning(f"⚠️ **Registration Notice:** {unreg_count} of {total_starred} starred players for **{selected_club}** are not currently registered with NCU.")
+            else:
+                st.success(f"✅ **Registration Verified:** All {total_starred} starred players for **{selected_club}** are officially registered.")
+
+            st.dataframe(
+                starred_display_df[disp_star_cols],
+                width="stretch",
+                hide_index=True,
+                column_config=get_standard_column_config(),
+                key=f"starred_roster_table_{domain}_{selected_club}"
+            )
+        else:
+            st.info(f"No starred roster records loaded for {selected_club}.")
+
+        st.divider()
+        if "starring_save_success" in st.session_state:
+            st.success(st.session_state.pop("starring_save_success"))
+        if "starring_save_warning" in st.session_state:
+            st.warning(st.session_state.pop("starring_save_warning"))
+
+        st.markdown("#### 🔄 Roster Modification & Player Replacement")
+
+        is_locked_now = sr.is_roster_modification_locked()
+        if is_locked_now:
+            st.warning(
+                "⚠️ **Post-July 31st Roster Modification Notice:** Standard roster modifications are locked per NCU Rule A12."
+            )
+            enable_override = st.checkbox(
+                "🔓 Enable Roster Edits (Emergency / Injury Adjustment)",
+                value=False,
+                key=f"a10_enable_override_{domain}_{selected_club}"
+            )
+        else:
+            enable_override = True
+
+        can_edit, edit_msg = sr.can_edit_roster(admin_override=enable_override)
+
+        if not can_edit:
+            st.info("🔒 Roster modification controls are currently locked. Check '🔓 Enable Roster Edits (Emergency / Injury Adjustment)' above to activate player replacement inputs.")
+        else:
+            if is_locked_now:
+                st.info("🔓 **Administrative Override Active:** Player replacement inputs and save controls unlocked for emergency / injury adjustments.")
+
+            rc1, rc2, rc3 = st.columns([1.5, 2, 2])
+            with rc1:
+                replace_tier = st.selectbox(
+                    "Team Tier:",
+                    options=list(quota_validation.keys()) if quota_validation else ["1st XI", "2nd XI", "3rd XI", "4th XI", "5th XI"],
+                    key=f"a10_replace_tier_{domain}_{selected_club}"
+                )
+            with rc2:
+                tier_players = []
+                if not club_star_df.empty and "XI_Level" in club_star_df.columns:
+                    tier_sub = club_star_df[club_star_df["XI_Level"].astype(str).str.strip().str.lower() == replace_tier.lower()]
+                    tier_sub_sorted = sr.sort_starring_roster_dataframe(tier_sub)
+                    tier_players = tier_sub_sorted["Full Name"].dropna().tolist()
+
+                # Check if this tier has an open vacancy under Rule A10 quotas
+                tier_quota = quota_validation.get(replace_tier, {}) if quota_validation else {}
+                has_vacancy = tier_quota.get("actual", 0) < tier_quota.get("expected", 0)
+                out_options = (["[Vacant Slot]"] + tier_players) if has_vacancy else tier_players
+
+                if out_options:
+                    player_out = st.selectbox(
+                        "Outgoing / De-Starred Player:",
+                        options=out_options,
+                        key=f"a10_player_out_{domain}_{selected_club}"
+                    )
+                else:
+                    player_out = st.text_input(
+                        "Outgoing / De-Starred Player:",
+                        key=f"a10_player_out_txt_{domain}_{selected_club}"
+                    )
+
+            # Build current starred tier map for the selected club (including alias variants)
+            starred_tier_map = {}
+            if not club_star_df.empty and "Full Name" in club_star_df.columns and "XI_Level" in club_star_df.columns:
+                for _, s_row in club_star_df.iterrows():
+                    s_fn = str(s_row.get("Full Name", "")).strip()
+                    s_tier = str(s_row.get("XI_Level", "")).strip()
+                    if s_fn:
+                        starred_tier_map[s_fn.lower()] = s_tier
+                        if 'df_alias' in locals() and df_alias is not None and not df_alias.empty:
+                            col_s80 = next((c for c in ["Official Registered Name", "Registered Name"] if c in df_alias.columns), None)
+                            col_nv = next((c for c in ["NV Play Name", "Input Name (Scorecard/Stats)"] if c in df_alias.columns), None)
+                            if col_s80 and col_nv:
+                                match_rows = df_alias[(df_alias[col_nv].astype(str).str.strip().str.lower() == s_fn.lower()) | (df_alias[col_s80].astype(str).str.strip().str.lower() == s_fn.lower())]
+                                for _, m_r in match_rows.iterrows():
+                                    m_s80 = str(m_r.get(col_s80, "")).strip().lower()
+                                    m_nv = str(m_r.get(col_nv, "")).strip().lower()
+                                    if m_s80:
+                                        starred_tier_map[m_s80] = s_tier
+                                    if m_nv:
+                                        starred_tier_map[m_nv] = s_tier
+
+            # Retrieve candidate registered club players
+            df_reg_lookup = df_reg_all if 'df_reg_all' in locals() and not df_reg_all.empty else (eng.get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame())
+            df_alias_lookup = df_alias if 'df_alias' in locals() and not df_alias.empty else (eng.get_excel_df(f_alias) if f_alias and os.path.exists(f_alias) else None)
+            candidate_players = sr.get_club_registered_players_list(
+                df_reg=df_reg_lookup,
+                club_name=selected_club,
+                clean_club_fn=eng.club_matches_team_base,
+                club_star_df=club_star_df,
+                df_alias=df_alias_lookup
+            )
+
+            with rc3:
+                if candidate_players:
+                    def format_player_in_opt(p_name: str) -> str:
+                        curr_tier = starred_tier_map.get(p_name.strip().lower())
+                        if curr_tier:
+                            return f"{p_name} ⭐ (Starred: {curr_tier})"
+                        return p_name
+
+                    player_in = st.selectbox(
+                        "Incoming Replacement Player:",
+                        options=candidate_players,
+                        format_func=format_player_in_opt,
+                        key=f"a10_player_in_select_{domain}_{selected_club}"
+                    )
+                else:
+                    player_in = st.text_input(
+                        "Incoming Replacement Player:",
+                        placeholder="e.g. John Smith",
+                        key=f"a10_player_in_txt_{domain}_{selected_club}"
+                    )
+
+            # Check if selected incoming player is currently starred in another tier
+            prev_tier = starred_tier_map.get(player_in.strip().lower()) if player_in else None
+            if prev_tier:
+                if prev_tier.lower() == replace_tier.lower():
+                    st.warning(f"⚠️ **Note:** **{player_in}** is already currently starred for **{replace_tier}**.")
+                else:
+                    st.info(
+                        f"ℹ️ **Promoted / Re-Starred Player:** **{player_in}** is currently starred in the **{prev_tier}**. "
+                        f"Assigning them to **{replace_tier}** will promote them and leave a vacancy in **{prev_tier}** that will need to be filled."
+                    )
+
+            if is_locked_now:
+                admin_reason = st.text_input(
+                    "Mandatory Override Reason / Explanation (required for league records):",
+                    placeholder="e.g., Season-ending injury replacement approved by NCU",
+                    key=f"a10_override_reason_{domain}_{selected_club}"
+                )
+            else:
+                admin_reason = "Standard pre-deadline starring roster modification"
+
+            if st.button("💾 Save Starring Adjustment & Update Audit Log", width="stretch", key=f"a10_save_override_{domain}_{selected_club}"):
+                if not player_in.strip():
+                    st.error("⚠️ Please select or enter a valid incoming replacement player name.")
+                elif not player_out.strip():
+                    st.error("⚠️ Please select or enter the outgoing player.")
+                elif player_in.strip().lower() == player_out.strip().lower() and not any(k in player_out.lower() for k in ["vacant", "empty"]):
+                    st.error("⚠️ Incoming replacement player cannot be the same as the outgoing player.")
+                elif is_locked_now and not admin_reason.strip():
+                    st.error("⚠️ An explanation comment is mandatory for post-July 31st administrative overrides.")
+                else:
+                    try:
+                        # 1. Update the master Excel workbook on disk
+                        sr.update_master_starring_roster(
+                            file_path=f_starring,
+                            club_name=selected_club,
+                            tier=replace_tier,
+                            player_out=player_out,
+                            player_in=player_in,
+                            prev_tier=prev_tier if prev_tier and prev_tier.lower() != replace_tier.lower() else None
+                        )
+
+                        # 2. Log override in NCU_Club_Starring_History.xlsx
+                        audit_record = sr.log_starring_override_change(
+                            club=selected_club,
+                            tier=replace_tier,
+                            player_out=player_out,
+                            player_in=player_in,
+                            admin_comment=admin_reason,
+                            prev_tier=prev_tier if prev_tier and prev_tier.lower() != replace_tier.lower() else None
+                        )
+
+                        # 3. Store flash messages in session state across rerun
+                        f_name = os.path.basename(f_starring) if f_starring else "Master Starring Excel"
+                        if any(k in player_out.lower() for k in ["vacant", "empty"]):
+                            action_desc = f"Assigned **{player_in}** into open vacant slot in **{replace_tier}**."
+                        else:
+                            action_desc = f"Replaced **{player_out}** with **{player_in}** in **{replace_tier}**."
+
+                        st.session_state["starring_save_success"] = (
+                            f"✅ **Starring Adjustment Saved & Roster Updated!** {action_desc}\n\n"
+                            f"Master workbook (`{f_name}`) and audit trail (`NCU_Club_Starring_History.xlsx`) updated successfully at {audit_record['Timestamp']}."
+                        )
+                        if prev_tier and prev_tier.lower() != replace_tier.lower():
+                            st.session_state["starring_save_warning"] = (
+                                f"🚨 **Starring Slot Vacancy Alert:** **{player_in}** was moved from **{prev_tier}** into **{replace_tier}**. "
+                                f"To maintain Rule A10 starring quotas, please assign a replacement player into **{prev_tier}**."
+                            )
+
+                        # 4. Trigger Streamlit rerun so that freshly modified file is re-read and page displays the new player immediately
+                        st.rerun()
+                    except Exception as ex:
+                        st.error(f"Error logging override change: {ex}")
+
+        starring_history_path = resolve_starring_history_path()
+        if starring_history_path and os.path.exists(starring_history_path):
+            with st.expander("📜 View Audit Trail & Config (NCU_Club_Starring_History.xlsx)"):
+                try:
+                    df_audit_view = eng.read_excel_calamine(starring_history_path, sheet_name="Starring Audit Trail")
+                    st.markdown("**Starring Audit Trail:**")
+                    st.dataframe(df_audit_view, width="stretch", hide_index=True)
+                except Exception:
+                    pass
+                try:
+                    df_intl_view = eng.read_excel_calamine(starring_history_path, sheet_name="International Exemptions")
+                    st.markdown("**International Duty Exemptions:**")
+                    st.dataframe(df_intl_view, width="stretch", hide_index=True)
+                except Exception:
+                    pass
+                try:
+                    df_disp_view = sr.load_board_dispensations(file_path=starring_history_path)
+                    st.markdown("**Board-Approved Executive Dispensations:**")
+                    st.dataframe(
+                        df_disp_view,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Player Name": st.column_config.TextColumn("Player Name"),
+                            "Club Name": st.column_config.TextColumn("Club Name"),
+                            "Allowed Lower Tier": st.column_config.TextColumn("Allowed Lower Tier", alignment="center"),
+                            "Dispensation Reason": st.column_config.TextColumn("Dispensation Reason"),
+                            "Effective Season": st.column_config.NumberColumn("Effective Season", format="%d", alignment="center")
+                        }
+                    )
+                except Exception:
+                    pass
+
+    # ----------------------------------------------------
+    # TAB 2: RULE A11 & A12 ABSENCE TRACKER & DEADLINE LOCK
+    # ----------------------------------------------------
+    with tab_a11:
+        st.subheader("⏱️ Rule A11 & A12: Absence Tracker & Eligibility Monitor")
+        st.markdown(
+            "Tracks player appearances across scorecard match logs. "
+            "Flags **⚠️ De-Starring Action Required** if a starred player does not appear for their team or a higher one "
+            "for **3 consecutive matches or 3 weeks** (whichever is greater). "
+            "International duty overrides this absence constraint."
+        )
+
+        # Hard Deadline Lock Banner
+        is_locked_now = sr.is_roster_modification_locked()
+        if is_locked_now:
+            st.warning("⚠️ **Hard Deadline Lock Active (NCU Rule A12):** Standard roster modifications and starring changes are locked after 31st July.")
+            override_t2 = st.checkbox(
+                "🔓 Enable Roster Edits (Emergency / Injury Adjustment)",
+                value=False,
+                key="a12_admin_override_t2"
+            )
+            if override_t2:
+                st.info("🔓 **Administrative Override Enabled:** Roster modification controls are unlocked in Rule A10 tab.")
+        else:
+            st.success("🔓 **Roster Modification Window Open:** Standard starring adjustments permitted prior to 31st July.")
+
+        col_cfg1, col_cfg2 = st.columns([1, 2])
+        with col_cfg1:
+            eval_date_input = st.date_input("Audit / Evaluation Date:", value=datetime.now().date(), key="a11_eval_date")
+            eval_date = datetime.combine(eval_date_input, datetime.min.time())
+        with col_cfg2:
+            # 1. Dynamically populate with whole club registration list (including starred players), sorted alphabetically (Surname, First Name)
+            df_reg_lookup = df_reg_all if 'df_reg_all' in locals() and not df_reg_all.empty else (eng.get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame())
+            df_alias_lookup = df_alias if 'df_alias' in locals() and not df_alias.empty else (eng.get_excel_df(f_alias) if f_alias and os.path.exists(f_alias) else None)
+            club_candidate_players = sr.get_club_registered_players_list(
+                df_reg=df_reg_lookup,
+                club_name=selected_club,
+                clean_club_fn=eng.club_matches_team_base,
+                club_star_df=club_star_df,
+                df_alias=df_alias_lookup
+            )
+            if not club_candidate_players:
+                club_candidate_players = sr.get_club_starred_roster_sorted(club_star_df)
+
+            # 2. Transactional persistence: Load saved exemptions from NCU_Club_Starring_History.xlsx
+            persisted_exemptions = sr.load_international_exemptions(selected_club, domain=domain)
+            if persisted_exemptions is None:
+                default_intl_pool = ["Mark Adair", "Paul Stirling"] if domain == "Men's" else ["Cara Murray"]
+                initial_exempt = [
+                    p for p in club_candidate_players
+                    if any(d.lower() == p.lower() or d.lower() in p.lower() for d in default_intl_pool)
+                ]
+                sr.save_international_exemptions(selected_club, initial_exempt, domain=domain)
+                persisted_exemptions = initial_exempt
+
+            # Ensure any persisted exemptions are preserved in available options
+            dropdown_options = list(club_candidate_players)
+            if persisted_exemptions:
+                for pe in persisted_exemptions:
+                    if pe and pe not in dropdown_options:
+                        dropdown_options.append(pe)
+            dropdown_options = sr.sort_players_by_surname(dropdown_options)
+
+            active_defaults = [p for p in (persisted_exemptions or []) if p in dropdown_options]
+
+            selected_intl_players = st.multiselect(
+                "Assign International Duty Exemptions (Club-Specific)",
+                options=dropdown_options,
+                default=active_defaults,
+                key=f"a11_intl_exempt_{domain}_{selected_club}",
+                help="Assign individual international duty exemptions for players representing Ireland. Exempts players from Rule A11/A12 de-starring absence thresholds."
+            )
+
+            # 3. Transactional persistence: Save dynamically if modified in multiselect widget
+            if set(selected_intl_players) != set(active_defaults):
+                sr.save_international_exemptions(selected_club, selected_intl_players, domain=domain)
+
+        # Evaluate absences for players in selected club via proven engine pipeline
+        df_absence = pd.DataFrame()
+        if not club_star_df.empty:
+            f_abandoned = c_files.get("abandoned", "")
+            f_id_map = c_files.get("id_map", "")
+            mtimes = tuple(
+                os.path.getmtime(p) for p in [f_reg, f_alias, f_bat, f_bowl, f_abandoned, f_id_map] if p and os.path.exists(p)
+            )
+            all_app, override_map, comp_map, get_official_name, _, _, _ = cached_starring_pipeline(
+                domain, f_reg, f_alias, f_bat, f_bowl, f_abandoned, f_id_map, None, None, mtimes
+            )
+
+            active_intl_list = [p.strip().lower() for p in selected_intl_players if str(p).strip()]
+
+            df_absence = eng.evaluate_club_starring_inactivity(
+                club_name=selected_club,
+                club_star_df=club_star_df,
+                all_app=all_app,
+                override_map=override_map,
+                comp_map=comp_map,
+                get_official_name_func=get_official_name,
+                international_players=active_intl_list,
+                eval_date=eval_date,
+                is_intl_override=False
+            )
+
+        # Summary KPIs
+        k1, k2, k3, k4 = st.columns(4)
+        total_p = len(df_absence)
+        flagged_p = len(df_absence[df_absence["Administrative Status"].str.startswith("⚠️")]) if not df_absence.empty else 0
+        intl_p = len(df_absence[df_absence["Administrative Status"].str.contains("International", na=False)]) if not df_absence.empty else 0
+        eligible_p = total_p - flagged_p
+
+        with k1: st.metric("Total Starred Players", total_p)
+        with k2: st.metric("Eligible Players", eligible_p)
+        with k3: st.metric("⚠️ De-Starring Required", flagged_p, delta=f"{flagged_p} Action Items" if flagged_p else "None", delta_color="inverse" if flagged_p else "normal")
+        with k4: st.metric("International Exemptions", intl_p)
+
+        if not df_absence.empty:
+            df_absence_sorted = sr.sort_starring_roster_dataframe(df_absence)
+            st.dataframe(
+                df_absence_sorted,
+                width="stretch",
+                hide_index=True,
+                column_config=get_standard_column_config()
+            )
+        else:
+            st.info("No player absence records to display.")
+
+    # ----------------------------------------------------
+    # TAB 3: RULE A13 TRANSFER MONITOR & FINANCE LINK
+    # ----------------------------------------------------
+    with tab_a13:
+        st.subheader("🔄 Rule A13: Seasonal Transfer Monitor & Financial Penalty Bridge")
+        st.markdown(
+            "Monitors seasonal player movements per **NCU Rule A13**:\n"
+            "- **Transfer Limit:** Maximum of 2 transfers allowed per player per season. Any 3rd+ transfer attempt is strictly blocked.\n"
+            "- **Financial Penalty:** For any valid transfer occurring **on or after 1st April**, an automatic **£25.00 Transfer Fee infraction** is assessed to the destination club and piped into `finance_app.py`."
+        )
+
+        df_reg_all = eng.get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame()
+        transfer_audit = sr.evaluate_player_transfers(df_reg_all, season_year=2026, clean_club_fn=eng.extract_base_club_name)
+
+        df_valid_trans = transfer_audit.get("valid_transfers", pd.DataFrame())
+        df_blocked_trans = transfer_audit.get("blocked_transfers", pd.DataFrame())
+        total_fees = transfer_audit.get("total_fees_assessed", 0.0)
+
+        # KPI row
+        m1, m2, m3, m4 = st.columns(4)
+        tot_trans = len(df_valid_trans)
+        fee_trans = len(df_valid_trans[df_valid_trans["Fee Infraction"]]) if not df_valid_trans.empty else 0
+        tot_blocked = len(df_blocked_trans)
+
+        with m1: st.metric("Total Valid Transfers", tot_trans)
+        with m2: st.metric("In-Season Transfers (>= 1 Apr)", fee_trans)
+        with m3: st.metric("Total Transfer Fees Due", f"£{total_fees:,.2f}", help="Assessed at £25.00 per late transfer on or after 1st April")
+        with m4: st.metric("Rule A13 Blocked Attempts", tot_blocked, delta=f"{tot_blocked} Blocked" if tot_blocked else "None", delta_color="inverse" if tot_blocked else "normal")
+
+        if not df_blocked_trans.empty:
+            st.error("🚨 **Rule A13 Transfer Limit Violations Detected:** The following transfers exceed the maximum 2 transfers per season limit and are blocked:")
+            df_blocked_sorted = sr.sort_transfer_records_dataframe(df_blocked_trans)
+            st.dataframe(
+                df_blocked_sorted,
+                width="stretch",
+                hide_index=True,
+                column_config=get_standard_column_config()
+            )
+
+        st.markdown("#### 🔄 Seasonal Player Transfers")
+        col_vt1, _ = st.columns([3, 1])
+        with col_vt1:
+            trans_scope = st.radio(
+                "Transfer View Scope:",
+                options=[f"🎯 {selected_club} Transfers", "🌐 All NCU Transfers (League-Wide)"],
+                horizontal=True,
+                key="a13_trans_scope"
+            )
+
+        def is_club_match(c_val: Any) -> bool:
+            if not c_val or pd.isna(c_val):
+                return False
+            return eng.club_matches_team_base(selected_club, str(c_val))
+
+        if trans_scope.startswith("🎯"):
+            filtered_trans = df_valid_trans[
+                df_valid_trans["To Club"].apply(is_club_match) | df_valid_trans["From Club"].apply(is_club_match)
+            ].copy() if not df_valid_trans.empty else pd.DataFrame()
+            empty_msg = f"No player transfers recorded involving **{selected_club}** for the 2026 season. Toggle **'All NCU Transfers'** above to review all {tot_trans} league-wide transfers."
+        else:
+            filtered_trans = df_valid_trans.copy()
+            empty_msg = "No valid transfer records found."
+
+        if not filtered_trans.empty:
+            filtered_trans = sr.sort_transfer_records_dataframe(filtered_trans)
+            disp_trans_cols = [c for c in ["Player", "From Club", "To Club", "Transfer Number", "Transfer Date", "Fee Due (£)", "Fee Infraction"] if c in filtered_trans.columns]
+            st.dataframe(
+                filtered_trans[disp_trans_cols],
+                width="stretch",
+                hide_index=True,
+                column_config=get_standard_column_config()
+            )
+        else:
+            st.info(empty_msg)
+
+
+        st.divider()
+        st.markdown("#### 💳 Dynamic Integration with Finance Command Center (`finance_app.py`)")
+        st.success("🔗 **Active Ledger Bridge:** All £25.00 transfer fees are dynamically linked with Sharon's official invoicing schedule matrix and itemized on club invoices.")
+
+# ==========================================
+# MODULE 4: INACTIVITY WARNINGS & ABSENCES
+# ==========================================
+elif app_mode == "Inactivity Warnings & Absences":
     st.title(PAGE_TITLES["starring_reports"])
     st.markdown("Generate club-by-club Excel files highlighting inactive starred players (Red/Yellow) and tracking international exemptions (Green).")
     
@@ -856,9 +1252,9 @@ elif app_mode == "Starring & Inactivity Reports":
                     st.error(f"An error occurred during processing: {str(e)}")
 
 # ==========================================
-# TOOL 5: CLUB CONTACTS & OFFICIALS DIRECTORY
+# MODULE 5: GROUND LOCATIONS & CONTACT DIRECTORY
 # ==========================================
-elif app_mode == "Club Contacts Directory":
+elif app_mode == "Ground Locations & Contact Directory":
     st.title(PAGE_TITLES["club_contacts"])
     st.markdown("Search and filter official union contacts by Club, Team Tier, or Union-Wide Role with one-tap calling and messaging.")
 
@@ -886,8 +1282,8 @@ elif app_mode == "Club Contacts Directory":
         ])
 
         contact_clubs = [c for c in df_contacts['Club'].unique() if c and str(c).lower() != 'nan']
-        all_clubs = sorted(list(set(contact_clubs) | set(NCU_ALL_CLUBS))) if contact_clubs else sorted(list(NCU_ALL_CLUBS))
-        present_tiers = [t for t in NCU_CONTACT_TIER_HIERARCHY if t == "All Roles & Officials" or t in df_contacts['Team Tier'].unique()]
+        all_clubs = sorted(list(set(contact_clubs) | set(eng.NCU_ALL_CLUBS))) if contact_clubs else sorted(list(eng.NCU_ALL_CLUBS))
+        present_tiers = [t for t in eng.NCU_CONTACT_TIER_HIERARCHY if t == "All Roles & Officials" or t in df_contacts['Team Tier'].unique()]
 
         # ----------------------------------------------------
         # TAB 1: TEAM-LEVEL & CLUB FILTERS
@@ -907,15 +1303,6 @@ elif app_mode == "Club Contacts Directory":
                     with st.expander(f"📍 {selected_club} Ground Locations", expanded=False):
                         for g_label, g_val in grounds.items():
                             st.markdown(f"**{g_label}:** {g_val}")
-
-                team_info = NCU_CLUB_TEAMS_STATIC.get(selected_club)
-                if team_info:
-                    with st.expander(f"🏏 {selected_club} Teams Summary ({team_info.get('total', 0)} Teams)", expanded=False):
-                        st.markdown(f"**Men's Teams:** {team_info.get('men', 0)} | **Women's Teams:** {team_info.get('women', 0)} | **Midweek Teams:** {team_info.get('midweek', 0)}")
-                        if team_info.get('women_teams'):
-                            st.markdown(f"**Women's Squads:** {', '.join(team_info['women_teams'])}")
-                        if team_info.get('mw_teams'):
-                            st.markdown(f"**Midweek Squads:** {', '.join(team_info['mw_teams'])}")
 
                 club_matches = df_contacts[df_contacts['Club'] == selected_club].sort_values(by='Role Order')
                 st.divider()

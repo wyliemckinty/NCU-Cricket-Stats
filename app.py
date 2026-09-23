@@ -11,11 +11,15 @@ import json
 import zipfile
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set, Tuple
+import sys
 import importlib
+import openpyxl
 
 import engine as eng
 import starring_rules as sr
-importlib.reload(sr)
+if "pytest" not in sys.modules:
+    importlib.reload(eng)
+    importlib.reload(sr)
 
 try:
     from docx import Document
@@ -136,6 +140,7 @@ PAGE_TITLES = {
     "midweek_checks": "🛡️ Midweek Registration & Starring Check",
     "starring_reports": "🚨 Club Starring & Inactivity Exporter",
     "starring_registry": "🏏 Club Starring Registry & Historical Eligibility Tracker",
+    "starring_predictor": "🔮 2027 Club Starring Predictor & Quota Modeler",
     "milestones_report": "🏆 League Milestones Report",
     "club_contacts": "📇 Club Contacts & Officials Directory",
     "csv_importer": "📥 NV Play CSV Match Stats Importer",
@@ -278,9 +283,9 @@ def get_standard_column_config() -> Dict[str, Any]:
         "XI_Level": st.column_config.Column(center_col_label("XI Level", 12), alignment="center", width="small"),
         "Club": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
         "Club Name": st.column_config.TextColumn("Club Name", alignment="left", width="medium"),
-        "Player": st.column_config.TextColumn("Player", alignment="left", width="medium"),
-        "Full Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
-        "Full_Name": st.column_config.TextColumn("Player Name", alignment="left", width="medium"),
+        "Player": st.column_config.TextColumn("Player", alignment="left", width=None),
+        "Full Name": st.column_config.TextColumn("Player Name", alignment="left", width=None),
+        "Full_Name": st.column_config.TextColumn("Player Name", alignment="left", width=None),
         "Starred Tier": st.column_config.Column(center_col_label("Starred Tier", 16), alignment="center", width="small"),
         "Registered": st.column_config.TextColumn(
             center_col_label("Registered", 14),
@@ -310,7 +315,123 @@ def get_standard_column_config() -> Dict[str, Any]:
         "Fee Due (£)": st.column_config.NumberColumn(center_col_label("Fee Due (£)", 14), format="£%.2f", alignment="center", width="small"),
         "Fee Infraction": st.column_config.CheckboxColumn("£25 Late Fee Infraction (>= 1 Apr)", width="medium"),
         "Total_Paid": st.column_config.NumberColumn(center_col_label("Fee Cleared", 14), format="£%.2f", alignment="center", width="small"),
+        # Starring Predictor & Waterfall Allocation Columns
+        "Projected_Rank": st.column_config.Column(center_col_label("Rank", 10), alignment="center", width="small"),
+        "2027_Predicted_Tier": st.column_config.Column(center_col_label("2027 Projected Tier", 22), alignment="center", width="small"),
+        "2027 Projected Tier": st.column_config.Column(center_col_label("2027 Projected Tier", 22), alignment="center", width="small"),
+        "2026_Starred_Tier": st.column_config.Column(center_col_label("2026 Starred", 16), alignment="center", width="small"),
+        "2026 Starred": st.column_config.Column(center_col_label("2026 Starred", 16), alignment="center", width="small"),
+        "Role": st.column_config.TextColumn(
+            "Role",
+            help="Player primary role (e.g. 🧤 Wicket-Keeper, 🏏 All-Rounder, 🎯 Bowler, 🏏 Batter)",
+            alignment="left",
+            width=None
+        ),
+        "Status": st.column_config.TextColumn(
+            "Status",
+            help="Starring Movement / Lock Status",
+            alignment="left",
+            width=None
+        ),
+        "Primary_Team": st.column_config.Column(center_col_label("Primary Team", 16), alignment="center", width="small"),
+        "Projected_Rating": st.column_config.NumberColumn(center_col_label("Projected Rating", 18), format="%.1f", alignment="center", width="small"),
+        "Performance_Score": st.column_config.NumberColumn(center_col_label("Performance Pts", 18), format="%.1f", alignment="center", width="small"),
+        "Inertia_Bonus": st.column_config.NumberColumn(center_col_label("Inertia Bonus", 16), format="%.1f", alignment="center", width="small"),
+        "Runs": st.column_config.NumberColumn(center_col_label("Runs", 10), format="%d", alignment="center", width="small"),
+        "Wickets": st.column_config.NumberColumn(center_col_label("Wickets", 12), format="%d", alignment="center", width="small"),
+        "Catches": st.column_config.NumberColumn(center_col_label("Catches", 12), format="%d", alignment="center", width="small"),
+        "Matches": st.column_config.NumberColumn(center_col_label("Matches", 12), format="%d", alignment="center", width="small"),
+        "Maidens": st.column_config.NumberColumn(center_col_label("Maidens", 12), format="%d", alignment="center", width="small"),
+        "Runs_Conceded": st.column_config.NumberColumn(center_col_label("Runs Conceded", 16), format="%d", alignment="center", width="small"),
+        "50s": st.column_config.NumberColumn(center_col_label("50s", 10), format="%d", alignment="center", width="small"),
+        "100s": st.column_config.NumberColumn(center_col_label("100s", 10), format="%d", alignment="center", width="small"),
+        "5W": st.column_config.NumberColumn(center_col_label("5W", 8), format="%d", alignment="center", width="small"),
+        "Stumpings": st.column_config.NumberColumn(center_col_label("Stumpings", 12), format="%d", alignment="center", width="small"),
+        "Tier": st.column_config.Column(center_col_label("Tier", 10), alignment="center", width="small"),
+        "Opposition": st.column_config.TextColumn("Opposition", alignment="left", width=None),
+        "Date": st.column_config.Column(center_col_label("Date", 14), alignment="center", width="small"),
+        "Comp": st.column_config.Column(center_col_label("Competition", 14), alignment="center", width="small"),
+        # In-Season Roster Realism & Performance Audit Columns
+        "Current Starred Tier": st.column_config.Column(center_col_label("Current Starred Tier", 22), alignment="center", width="medium"),
+        "Current Tier": st.column_config.Column(center_col_label("Current Tier", 16), alignment="center", width="medium"),
+        "Recommended Tier": st.column_config.Column(center_col_label("Recommended Tier", 18), alignment="center", width="medium"),
+        "Alert": st.column_config.TextColumn(
+            "Alert Tracking",
+            help="Roster Realism & Smurfing Alerts",
+            alignment="left",
+            width="large"
+        ),
+        "Promotion Path": st.column_config.TextColumn("Promotion Cascade Path", alignment="left", width="large"),
+        "Breach Reasons": st.column_config.TextColumn("Ceiling Breaches", alignment="left", width="large"),
+        "Details": st.column_config.TextColumn("Audit Details", alignment="left", width="large"),
+        "Bat Avg": st.column_config.NumberColumn(center_col_label("Bat Avg", 12), format="%.1f", alignment="center", width="small"),
+        "SR": st.column_config.NumberColumn(center_col_label("SR (%)", 12), format="%.1f%%", alignment="center", width="small"),
+        "Bowl Avg": st.column_config.NumberColumn(center_col_label("Bowl Avg", 12), format="%.1f", alignment="center", width="small"),
+        "Econ": st.column_config.NumberColumn(center_col_label("Econ", 10), format="%.2f", alignment="center", width="small"),
     }
+
+
+def render_seasonal_rollover_panel(domain: str = "Men's") -> None:
+    """
+    Renders the NCU Annual Seasonal Rollover Operations panel with safety controls
+    and a two-stage transactional form lock for multi-year archiving and clean template ingestion.
+    """
+    with st.expander("⏳ NCU Annual Seasonal Rollover Operations", expanded=False):
+        st.markdown("##### ⏳ NCU Annual Seasonal Rollover Operations")
+        st.caption(
+            "Safely transitions NCU cricket databases between competitive seasons. "
+            "Step 1 copies and stamps current active season data sheets (Open, Women's, Midweek) into the `archive/` repository. "
+            "Step 2 resets active sheets to clean structural templates with #1F4E78 dark navy headers for the upcoming season."
+        )
+        col_r1, col_r2 = st.columns([1, 2])
+        with col_r1:
+            rollover_year = st.number_input(
+                "Upcoming Season:",
+                min_value=2026,
+                max_value=2035,
+                value=2027,
+                step=1,
+                key=f"roll_season_input_{domain}"
+            )
+        completed_year = int(rollover_year) - 1
+        with col_r2:
+            st.write("")
+            st.info(f"Target Transition: Archive **{completed_year}** Active Records ➡️ Initialize Clean **{rollover_year}** Templates")
+
+        st.markdown("---")
+        st.markdown("###### Two-Stage Transactional Rollover Workflow")
+
+        # Step 1: Archiving
+        st.markdown("**Step 1: Seasonal Archive**")
+        st.caption(f"Copies all active raw data sheets for Open, Women's, and Midweek cricket into `archive/` stamped with the year suffix (e.g. `Open_Season_{completed_year}.xlsx`).")
+        if st.button(f"🗄️ Archive {completed_year} Active Data Sheets", type="primary", key=f"btn_archive_{domain}_{completed_year}"):
+            try:
+                archived_files = eng.archive_completed_season(target_year=completed_year)
+                st.session_state[f"season_archived_{completed_year}"] = True
+                st.success(f"✅ Successfully archived {len(archived_files)} data sheets for {completed_year} into `archive/`!")
+            except Exception as e:
+                st.error(f"Error during seasonal archive: {e}")
+
+        st.markdown("---")
+        # Step 2: Wipe & Deploy Clean Templates
+        st.markdown("**Step 2: Wipe Active Sheets & Initialize Templates**")
+        st.caption(f"Overwrites active main folder files with blank rows, preserving formal structural columns, validation strings, and default #1F4E78 dark navy header styles.")
+
+        confirm_wipe = st.checkbox(
+            f"⚠️ I confirm that {completed_year} data is safely archived and authorize wiping active sheets to deploy {rollover_year} clean templates.",
+            key=f"chk_confirm_wipe_{domain}_{completed_year}"
+        )
+
+        if st.button(f"🧹 Wipe Active Sheets & Initialize {rollover_year} Templates", type="secondary", disabled=not confirm_wipe, key=f"btn_wipe_{domain}_{completed_year}"):
+            try:
+                cleaned = eng.generate_clean_season_templates(target_year=int(rollover_year))
+                eng.clear_perf_matrix_domain_cache()
+                st.cache_data.clear()
+                st.cache_resource.clear()
+                st.success(f"✅ Successfully initialized {len(cleaned)} clean templates for {rollover_year}!")
+                st.rerun()
+            except Exception as e:
+                st.error(f"Error initializing templates: {e}")
 
 inject_custom_styles()
 
@@ -331,6 +452,7 @@ with st.sidebar:
         [
             "2026 Season Summary Dashboard",
             "Club Starring Registry & Historical Eligibility Tracker",
+            "2027 Starring Predictor",
             "CSV Match Stats Importer",
             "Player Disambiguation & ID Mapping",
             "Registration Checks",
@@ -982,7 +1104,8 @@ elif app_mode == "Club Starring Registry & Historical Eligibility Tracker":
                 starred_display_df[disp_star_cols],
                 width="stretch",
                 hide_index=True,
-                column_config=get_standard_column_config()
+                column_config=get_standard_column_config(),
+                key=f"starred_roster_table_{domain}_{selected_club}"
             )
         else:
             st.info(f"No starred roster records loaded for {selected_club}.")
@@ -1188,6 +1311,25 @@ elif app_mode == "Club Starring Registry & Historical Eligibility Tracker":
                     st.dataframe(df_intl_view, width="stretch", hide_index=True)
                 except Exception:
                     pass
+                try:
+                    df_disp_view = sr.load_board_dispensations(file_path=starring_history_path)
+                    st.markdown("**Board-Approved Executive Dispensations:**")
+                    st.dataframe(
+                        df_disp_view,
+                        width="stretch",
+                        hide_index=True,
+                        column_config={
+                            "Player Name": st.column_config.TextColumn("Player Name"),
+                            "Club Name": st.column_config.TextColumn("Club Name"),
+                            "Allowed Lower Tier": st.column_config.TextColumn("Allowed Lower Tier", alignment="center"),
+                            "Dispensation Reason": st.column_config.TextColumn("Dispensation Reason"),
+                            "Effective Season": st.column_config.NumberColumn("Effective Season", format="%d", alignment="center")
+                        }
+                    )
+                except Exception:
+                    pass
+
+        render_seasonal_rollover_panel(domain=domain)
 
     # ----------------------------------------------------
     # TAB 2: RULE A11 & A12 ABSENCE TRACKER & DEADLINE LOCK
@@ -1250,10 +1392,7 @@ elif app_mode == "Club Starring Registry & Historical Eligibility Tracker":
                 for pe in persisted_exemptions:
                     if pe and pe not in dropdown_options:
                         dropdown_options.append(pe)
-                dropdown_options = sorted(
-                    dropdown_options,
-                    key=lambda x: (x.strip().split()[-1].lower() if x.strip().split() else "", x.strip().lower())
-                )
+            dropdown_options = sr.sort_players_by_surname(dropdown_options)
 
             active_defaults = [p for p in (persisted_exemptions or []) if p in dropdown_options]
 
@@ -1397,6 +1536,744 @@ elif app_mode == "Club Starring Registry & Historical Eligibility Tracker":
         st.divider()
         st.markdown("#### 💳 Dynamic Integration with Finance Command Center (`finance_app.py`)")
         st.success("🔗 **Active Ledger Bridge:** All £25.00 transfer fees are dynamically linked with Sharon's official invoicing schedule matrix and itemized on club invoices.")
+
+# ==========================================
+# TOOL 2B: 2027 STARRING PREDICTOR & QUOTA MODELER
+# ==========================================
+elif app_mode == "2027 Starring Predictor":
+    st.title(PAGE_TITLES.get("starring_predictor", "🔮 2027 Club Starring Predictor & Quota Modeler"))
+    st.markdown("Simulate and project 2027 club starring rosters using 2026 performance weighting models and strict Rule A10 / WA10 waterfall quotas.")
+
+    c_sel1, c_sel2 = st.columns([1, 2])
+    with c_sel1:
+        domain = st.radio("Competition Domain:", ["Men's", "Women's"], horizontal=True, key="pred_domain")
+
+    is_womens = "women" in domain.lower()
+    c_files = eng.DEFAULT_FILES[domain]
+
+    with st.sidebar:
+        with st.expander("📁 File Path Configurations", expanded=False):
+            f_reg = st.text_input("Official Registry (Excel)", value=c_files["reg"], key=f"pred_reg_{domain}")
+            f_alias = st.text_input("Aliases Master (Excel)", value=c_files["alias"], key=f"pred_alias_{domain}")
+            f_id_map = st.text_input("ID Mapping Master (Excel)", value=c_files.get("id_map", ""), key=f"pred_id_map_{domain}")
+            f_bat = st.text_input("Batting Stats (Excel)", value=c_files["bat"], key=f"pred_bat_{domain}")
+            f_bowl = st.text_input("Bowling Stats (Excel)", value=c_files["bowl"], key=f"pred_bowl_{domain}")
+            f_starring = st.text_input("Starring Master (Excel)", value=c_files.get("starring", ""), key=f"pred_starring_{domain}")
+
+    custom_files = {
+        "reg": f_reg, "alias": f_alias, "id_map": f_id_map,
+        "bat": f_bat, "bowl": f_bowl, "starring": f_starring
+    }
+
+    starring_df = pd.DataFrame()
+    parsed_club_dict = {}
+    if f_starring and os.path.exists(f_starring):
+        starring_df, parsed_club_dict = eng.cached_parse_starring_data(f_starring, os.path.getmtime(f_starring))
+
+    available_clubs = sorted(list(parsed_club_dict.keys())) if parsed_club_dict else sorted(list(eng.NCU_ALL_CLUBS))
+
+    with c_sel2:
+        selected_club = st.selectbox(
+            "Select Club to Model:",
+            options=available_clubs,
+            index=0 if available_clubs else None,
+            key=f"pred_club_select_{domain}"
+        )
+
+    # -------------------------------------------------------------
+    # GLOBAL ACTION: BATCH 38-CLUB 2027 STARRING MASTER EXPORTER
+    # -------------------------------------------------------------
+    with st.container():
+        st.markdown("---")
+        col_b1, col_b2 = st.columns([3, 2])
+        with col_b1:
+            batch_clicked = st.button(
+                "📦 Batch Export All 38 Clubs 2027 Projected Starring",
+                type="primary",
+                key=f"btn_batch_export_all_38_{domain}",
+                use_container_width=True
+            )
+        with col_b2:
+            if st.session_state.get(f"batch_38_zip_data_{domain}") is not None:
+                st.download_button(
+                    label="Download NCU_Projected_Starring_2027_Master_Batch.zip",
+                    data=st.session_state[f"batch_38_zip_data_{domain}"],
+                    file_name="NCU_Projected_Starring_2027_Master_Batch.zip",
+                    mime="application/zip",
+                    type="primary",
+                    key=f"dl_btn_batch_38_{domain}",
+                    use_container_width=True
+                )
+
+        if batch_clicked:
+            prog_bar = st.progress(0, text="Initializing 38-club batch export...")
+            def _report_prog(cur_idx: int, tot_cnt: int, c_name: str) -> None:
+                p_val = min(1.0, max(0.0, float(cur_idx) / float(tot_cnt)))
+                prog_bar.progress(p_val, text=f"Processing {c_name} ({cur_idx}/{tot_cnt})...")
+
+            t_weights = {
+                "1st XI": float(st.session_state.get(f"tw_1st_{domain}", 1.00)),
+                "2nd XI": float(st.session_state.get(f"tw_2nd_{domain}", 0.75)),
+                "3rd XI": float(st.session_state.get(f"tw_3rd_{domain}", 0.55)),
+                "4th XI": float(st.session_state.get(f"tw_4th_{domain}", 0.40)),
+                "5th XI": float(st.session_state.get(f"tw_5th_{domain}", 0.25)),
+                "6th XI": float(st.session_state.get(f"tw_6th_{domain}", 0.15)),
+                "Midweek XI": 0.30
+            }
+            mw_inc = bool(st.session_state.get(f"inc_mw_{domain}", False))
+            irish_inc = bool(st.session_state.get(f"inc_irish_{domain}", True if domain == "Men's" else False))
+            c_weights = {
+                "League": 1.00, "Cup": 1.00,
+                "T20": float(st.session_state.get(f"cw_t20_{domain}", 0.80)),
+                "Midweek": 0.30 if mw_inc else 0.0,
+                "Irish": float(st.session_state.get(f"cw_irish_{domain}", 1.10)) if irish_inc else 0.0
+            }
+            p_ratio = float(st.session_state.get(f"inertia_slider_{domain}", 80))
+            i_wt = float(100.0 - p_ratio) / 100.0
+            wk_v = float(st.session_state.get(f"wk_val_{domain}", 15.0))
+
+            compiled_zip_bio = eng.compile_batch_projected_starring_zip(
+                domain=domain,
+                custom_files=custom_files,
+                tier_weights=t_weights,
+                comp_weights=c_weights,
+                perf_weights={"dismissal_val": wk_v, "keeper_dismissal_val": wk_v},
+                inertia_weight=i_wt,
+                include_midweek=mw_inc,
+                include_irish=irish_inc,
+                progress_callback=_report_prog
+            )
+            prog_bar.progress(1.0, text="✅ All 38 clubs compiled successfully!")
+            st.session_state[f"batch_38_zip_data_{domain}"] = compiled_zip_bio.getvalue()
+            st.success("🎉 Successfully compiled 2027 Projected Starring rosters for all 38 clubs into memory archive!")
+            st.rerun()
+
+        st.markdown("---")
+
+    if not selected_club:
+        st.info("Please select a club to model.")
+    else:
+        # Detect club switch immediately and advance table version to force clean remount
+        if st.session_state.get("current_modeled_club") != selected_club:
+            st.session_state["starring_table_version"] = st.session_state.get("starring_table_version", 0) + 1
+            st.session_state["current_modeled_club"] = selected_club
+            for k in list(st.session_state.keys()):
+                if any(p in str(k) for p in ["pred_roster_table_", "roster_filter_", "pred_prom_table_", "pred_rel_table_", "roster_wrap_"]):
+                    if selected_club not in str(k):
+                        st.session_state.pop(k, None)
+
+        club_star_df = parsed_club_dict.get(selected_club, pd.DataFrame()) if selected_club else pd.DataFrame()
+        all_club_counts = eng.get_all_club_team_counts()
+        auto_teams = sr.get_club_senior_team_count(
+            club_name=selected_club,
+            domain=domain,
+            club_starring_df=club_star_df,
+            all_club_counts=all_club_counts
+        )
+
+        with st.expander("⚙️ Model Weighting & Tuning Parameters", expanded=False):
+            st.markdown("##### 1. Tier Weighting Multipliers ($W_{tier}$)")
+            st.caption("Performances in higher team levels carry greater weight for future starring.")
+            col_tw1, col_tw2, col_tw3 = st.columns(3)
+            with col_tw1:
+                w_1st = st.slider("1st XI Weight", 0.50, 1.50, 1.00, 0.05, key=f"tw_1st_{domain}")
+                w_2nd = st.slider("2nd XI Weight", 0.40, 1.20, 0.75, 0.05, key=f"tw_2nd_{domain}")
+            with col_tw2:
+                w_3rd = st.slider("3rd XI Weight", 0.25, 1.00, 0.55, 0.05, key=f"tw_3rd_{domain}")
+                w_4th = st.slider("4th XI Weight", 0.15, 0.80, 0.40, 0.05, key=f"tw_4th_{domain}")
+            with col_tw3:
+                w_5th = st.slider("5th XI Weight", 0.10, 0.60, 0.25, 0.05, key=f"tw_5th_{domain}")
+                w_6th = st.slider("6th XI Weight", 0.05, 0.50, 0.15, 0.05, key=f"tw_6th_{domain}")
+
+            tier_weights_config = {
+                "1st XI": w_1st, "2nd XI": w_2nd, "3rd XI": w_3rd,
+                "4th XI": w_4th, "5th XI": w_5th, "6th XI": w_6th,
+                "Midweek XI": 0.30
+            }
+
+            st.markdown("##### 2. Competition Format Multipliers ($W_{comp}$)")
+            col_cw1, col_cw2 = st.columns(2)
+            with col_cw1:
+                inc_mw = st.toggle("Include Midweek League Matches?", value=False, key=f"inc_mw_{domain}")
+                w_t20 = st.slider("T20 Competition Weight", 0.50, 1.20, 0.80, 0.05, key=f"cw_t20_{domain}")
+            with col_cw2:
+                inc_irish = st.toggle("Include Irish National Cups?", value=True if domain == "Men's" else False, key=f"inc_irish_{domain}")
+                w_irish = st.slider("Irish Cup Weight", 0.80, 1.50, 1.10, 0.05, key=f"cw_irish_{domain}")
+
+            comp_weights_config = {
+                "League": 1.00, "Cup": 1.00, "T20": w_t20,
+                "Midweek": 0.30 if inc_mw else 0.0, "Irish": w_irish if inc_irish else 0.0
+            }
+
+            st.markdown("##### 3. Baseline Starring Inertia vs. 2026 Performance Blend Ratio")
+            perf_pct = st.slider(
+                "Baseline Starring Inertia vs. 2026 Performance Blend Ratio (%):",
+                min_value=0,
+                max_value=100,
+                value=80,
+                step=5,
+                help="Higher Inertia heavily weights historical 2026 starring tiers; Higher Performance rewards raw match-day statistics.",
+                key=f"inertia_slider_{domain}"
+            )
+            st.caption(
+                f"Current Blend: **{perf_pct}% Match Performance** / **{100 - perf_pct}% Historical Starring Inertia**"
+            )
+            inertia_weight = float(100 - perf_pct) / 100.0
+
+            st.markdown("##### 4. Specialist Wicket-Keeper Dismissal Weighting")
+            w_keeper = st.slider(
+                "🧤 Wicket-Keeper Dismissal Value (pts per Catch / Stumping):",
+                min_value=5.0,
+                max_value=30.0,
+                value=15.0,
+                step=1.0,
+                help="Calibrates rating points for wicket-keeper catches behind the stumps and stumpings to ensure primary glovemen balance fairly against all-rounder bowling points.",
+                key=f"wk_val_{domain}"
+            )
+            st.caption(f"Currently awarding **{w_keeper:.1f} pts** per wicket-keeper dismissal (equivalent to {(w_keeper/20.0):.2f} bowling wickets).")
+
+        with st.expander("📜 Board-Approved Executive Dispensations", expanded=False):
+            st.markdown("##### Active Executive Roster Dispensations (Rule A10 / WA10)")
+            st.caption(
+                "Grants formal league authorization for specific players to skip mandatory top-tier cut-offs "
+                "and drop into approved lower tiers due to verified availability constraints (e.g. work or religious commitments)."
+            )
+            df_all_disp = sr.load_board_dispensations(season=2027)
+            if df_all_disp is not None and not df_all_disp.empty:
+                st.dataframe(
+                    df_all_disp,
+                    width="stretch",
+                    hide_index=True,
+                    column_config={
+                        "Player Name": st.column_config.TextColumn("Player Name", help="Authorized player"),
+                        "Club Name": st.column_config.TextColumn("Club Name", help="Registered club"),
+                        "Allowed Lower Tier": st.column_config.TextColumn("Allowed Lower Tier", help="Authorized lower playing level", alignment="center"),
+                        "Dispensation Reason": st.column_config.TextColumn("Dispensation Reason", help="Executive rationale"),
+                        "Effective Season": st.column_config.NumberColumn("Effective Season", format="%d", help="Applicable season", alignment="center")
+                    }
+                )
+
+                st.markdown("---")
+                st.markdown("##### 🗑️ Revoke / Remove Active Board Dispensation")
+                disp_options = []
+                for _, d_row in df_all_disp.iterrows():
+                    p_name = str(d_row.get("Player Name", "")).strip()
+                    c_name = str(d_row.get("Club Name", "")).strip()
+                    t_name = str(d_row.get("Allowed Lower Tier", "")).strip()
+                    s_name = str(d_row.get("Effective Season", 2027)).strip()
+                    if p_name:
+                        disp_options.append(f"{p_name} ({c_name} — {t_name}, Season {s_name})")
+
+                col_del1, col_del2 = st.columns([3, 1])
+                with col_del1:
+                    chosen_disp_del = st.selectbox(
+                        "Select Dispensation to Remove:",
+                        options=disp_options,
+                        key=f"disp_del_sel_{domain}_{selected_club}"
+                    )
+                with col_del2:
+                    st.write("")
+                    st.write("")
+                    del_btn = st.button("🗑️ Revoke Dispensation", type="secondary", key=f"btn_del_disp_{domain}_{selected_club}")
+
+                if del_btn and chosen_disp_del:
+                    del_player = chosen_disp_del.split(" (")[0].strip()
+                    del_club = chosen_disp_del.split(" (")[1].split(" — ")[0].strip() if " — " in chosen_disp_del else None
+                    del_season = 2027
+                    try:
+                        season_str = chosen_disp_del.rstrip(")").split("Season ")[-1].strip()
+                        del_season = int(season_str)
+                    except Exception:
+                        pass
+
+                    success = sr.delete_board_dispensation(
+                        player_name=del_player,
+                        club_name=del_club,
+                        effective_season=del_season
+                    )
+                    if success:
+                        eng.clear_perf_matrix_domain_cache()
+                        st.success(f"✅ Board Dispensation revoked and removed for **{del_player}** ({del_club})!")
+                        st.rerun()
+                    else:
+                        st.error(f"Could not remove dispensation for {del_player}.")
+            else:
+                st.info("No active executive dispensations on record.")
+
+            st.markdown("---")
+            st.markdown("##### ✍️ Authorize / Edit Board Dispensation")
+            st.caption("Submit a player's details below to authorize a new dispensation, or select an existing player to edit their tier and rationale.")
+            with st.form(key=f"board_disp_form_{domain}_{selected_club}"):
+                col_f1, col_f2 = st.columns(2)
+                with col_f1:
+                    all_clubs_disp = sorted(list(set(all_club_counts.keys() if all_club_counts else [selected_club])))
+                    if selected_club in all_clubs_disp:
+                        init_idx = all_clubs_disp.index(selected_club)
+                    else:
+                        all_clubs_disp.insert(0, selected_club)
+                        init_idx = 0
+                    disp_club_sel = st.selectbox("Select Club:", options=all_clubs_disp, index=init_idx)
+
+                with col_f2:
+                    df_reg_disp = df_reg_all if 'df_reg_all' in locals() and not df_reg_all.empty else (eng.get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame())
+                    club_disp_players = sr.get_club_registered_players_list(
+                        df_reg=df_reg_disp,
+                        club_name=disp_club_sel,
+                        clean_club_fn=eng.club_matches_team_base,
+                        club_star_df=parsed_dict.get(disp_club_sel, pd.DataFrame()) if 'parsed_dict' in locals() else pd.DataFrame()
+                    )
+                    if not club_disp_players:
+                        club_disp_players = [p for p in ["Simon King", "Yuvaraj Vijayakumar"] if p]
+                    disp_player_sel = st.selectbox("Select Player:", options=club_disp_players)
+
+                col_f3, col_f4 = st.columns([1, 2])
+                with col_f3:
+                    disp_tier_sel = st.selectbox(
+                        "Allowed Lower Tier:",
+                        options=["2nd XI", "3rd XI", "4th XI", "5th XI", "6th XI", "Unstarred"],
+                        index=0
+                    )
+                    disp_season_sel = st.number_input("Effective Season:", min_value=2025, max_value=2030, value=2027)
+                with col_f4:
+                    disp_reason_input = st.text_area(
+                        "Dispensation Reason:",
+                        placeholder="e.g. Cannot play Saturdays - Sunday availability only due to work/religious commitments",
+                        height=100
+                    )
+
+                submit_disp = st.form_submit_button("Authorize and Save Dispensation", type="primary")
+                if submit_disp:
+                    if not disp_player_sel:
+                        st.error("Please select a valid player.")
+                    elif not disp_reason_input.strip():
+                        st.error("Please enter a valid dispensation reason.")
+                    else:
+                        try:
+                            sr.save_board_dispensation(
+                                player_name=disp_player_sel,
+                                club_name=disp_club_sel,
+                                allowed_lower_tier=disp_tier_sel,
+                                dispensation_reason=disp_reason_input.strip(),
+                                effective_season=int(disp_season_sel)
+                            )
+                            eng.clear_perf_matrix_domain_cache()
+                            st.success(f"✅ Board Dispensation authorized and saved for **{disp_player_sel}** ({disp_club_sel} — {disp_tier_sel})!")
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Error saving dispensation: {e}")
+
+        render_seasonal_rollover_panel(domain=domain)
+
+        with st.spinner(f"Aggregating 2026 performance scorecards for {selected_club}..."):
+            perf_matrix = eng.build_club_player_performance_matrix(
+                club_name=selected_club,
+                domain=domain,
+                include_midweek=inc_mw,
+                include_irish=inc_irish,
+                custom_files=custom_files
+            )
+
+        if perf_matrix.empty:
+            st.warning(f"No 2026 scorecard performances found for {selected_club}.")
+        else:
+            scored_df = eng.calculate_projected_starring_scores(
+                perf_df=perf_matrix,
+                tier_weights=tier_weights_config,
+                comp_weights=comp_weights_config,
+                perf_weights={"dismissal_val": w_keeper, "keeper_dismissal_val": w_keeper},
+                inertia_weight=inertia_weight
+            )
+
+            all_player_names = sr.sort_players_by_surname(set(eng.strip_club_suffix(p) for p in scored_df["Player"].tolist()))
+
+            # Load persisted international exemptions for this club
+            persisted_intl = sr.load_international_exemptions(selected_club, domain=domain)
+            if persisted_intl is None:
+                default_intl_pool = ["Mark Adair", "Paul Stirling"] if domain == "Men's" else ["Cara Murray"]
+                initial_exempt = [
+                    p for p in all_player_names
+                    if any(d.lower() == p.lower() or d.lower() in p.lower() for d in default_intl_pool)
+                ]
+                if initial_exempt:
+                    sr.save_international_exemptions(selected_club, initial_exempt, domain=domain)
+                persisted_intl = initial_exempt or []
+
+            # Ensure any persisted exemptions are preserved in options and strictly sorted by surname
+            all_player_names = sr.sort_players_by_surname(set(all_player_names).union(persisted_intl or []))
+            active_intl_defaults = [p for p in (persisted_intl or []) if p in all_player_names]
+
+            col_t1, col_t2 = st.columns([1, 2])
+            with col_t1:
+                min_teams = 1 if is_womens else 2
+                max_teams = 4 if is_womens else 6
+                sim_teams = st.number_input(
+                    "Simulate 2027 Senior Teams Fielded:",
+                    min_value=min_teams,
+                    max_value=max_teams,
+                    value=max(min_teams, min(int(auto_teams), max_teams)),
+                    help="Determines exact Rule A10 / WA10 starring slots.",
+                    key=f"sim_teams_{domain}_{selected_club}"
+                )
+
+            with col_t2:
+                departing_players = st.multiselect(
+                    "⚪ Mark Departing / Transferred Players (Cascades Next Player Up):",
+                    options=all_player_names,
+                    default=[],
+                    help="Players who transferred out, retired, or moved away. They will not consume starring quota slots.",
+                    key=f"dep_players_{domain}_{selected_club}"
+                )
+                manual_locks = st.multiselect(
+                    "⭐ Manually Lock Players to 1st XI (e.g. Captain / Overseas Pro):",
+                    options=[p for p in all_player_names if p not in departing_players],
+                    default=[],
+                    help="Guarantees player 1st XI starring, consuming a quota slot.",
+                    key=f"lock_players_{domain}_{selected_club}"
+                )
+                intl_exempt_players = st.multiselect(
+                    "🏏 International Duty Exemptions (Rule A11/A12):",
+                    options=[p for p in all_player_names if p not in departing_players],
+                    default=active_intl_defaults,
+                    help="Assign club players on Ireland international duty. Exempts them from Rule A11/A12 inactivity penalties. To officially star an exempt player in the 1st XI (e.g. Mark Adair), also add them to 'Manually Lock Players to 1st XI'.",
+                    key=f"pred_intl_exempt_{domain}_{selected_club}"
+                )
+
+                # Transactional persistence: Save dynamically if modified in multiselect widget
+                if set(intl_exempt_players) != set(active_intl_defaults):
+                    sr.save_international_exemptions(selected_club, intl_exempt_players, domain=domain)
+                    eng.clear_perf_matrix_domain_cache()
+
+            club_disp_df = sr.load_board_dispensations(club_name=selected_club, season=2027)
+
+            roster_df = sr.allocate_waterfall_starring_roster(
+                player_data_df=scored_df,
+                team_count=int(sim_teams),
+                domain=domain,
+                manual_locks=manual_locks,
+                departures=departing_players,
+                dispensations=club_disp_df
+            )
+            if "Player" in roster_df.columns:
+                roster_df["Player"] = roster_df["Player"].apply(lambda p: eng.strip_club_suffix(str(p)))
+
+            quotas = sr.get_starring_quotas(int(sim_teams), domain)
+            total_starred_slots = sum(quotas.values())
+            promoted_cnt = len(roster_df[roster_df["Status"] == "🟢 Promoted"])
+            retained_cnt = len(roster_df[roster_df["Status"] == "🔵 Retained"])
+            relegated_cnt = len(roster_df[roster_df["Status"] == "🟠 Relegated"])
+
+            st.divider()
+            m_c1, m_c2, m_c3, m_c4, m_c5 = st.columns(5)
+            with m_c1: st.metric("Simulated Teams", f"{sim_teams} Teams")
+            with m_c2: st.metric("Starred Slots", f"{total_starred_slots} Slots")
+            with m_c3: st.metric("Promoted", f"{promoted_cnt}", delta="Moving Up", delta_color="normal")
+            with m_c4: st.metric("Retained", f"{retained_cnt}", delta="Stable", delta_color="off")
+            with m_c5: st.metric("Relegated / At Risk", f"{relegated_cnt}", delta="Moving Down", delta_color="inverse")
+
+            tab_pred, tab_comp, tab_insp, tab_audit = st.tabs([
+                "📋 Predicted 2027 Roster",
+                "🔄 Comparison (2026 vs 2027)",
+                "📊 Player Inspector",
+                "🔍 2027 In-Season Roster Audit"
+            ])
+
+            with tab_pred:
+                st.subheader(f"📋 {selected_club} — Predicted 2027 Starring Roster")
+                tier_filter_opts = ["All Tiers"] + sorted(list(roster_df["2027_Predicted_Tier"].unique()))
+                chosen_tier = st.selectbox("Filter Roster by Predicted Tier:", options=tier_filter_opts, key=f"roster_filter_{domain}_{selected_club}")
+
+                disp_roster = roster_df if chosen_tier == "All Tiers" else roster_df[roster_df["2027_Predicted_Tier"] == chosen_tier]
+
+                if "Projected_Rank" in disp_roster.columns:
+                    disp_roster = disp_roster.sort_values(by="Projected_Rank", ascending=True).reset_index(drop=True)
+
+                disp_cols = [
+                    "Projected_Rank", "Player", "Role", "2027_Predicted_Tier", "Status",
+                    "2026_Starred_Tier", "Primary_Team", "Projected_Rating",
+                    "Runs", "Wickets", "Catches", "Stumpings", "Matches"
+                ]
+                valid_disp_cols = [c for c in disp_cols if c in disp_roster.columns]
+
+                # Dynamic revision signature guaranteeing that changing club, domain, teams, or tier filter
+                # forces Streamlit and Glide Data Grid to remount cleanly and start at row 0 (Rank 1 down).
+                state_sig = f"{domain}_{selected_club}_{sim_teams}_{chosen_tier}"
+                if st.session_state.get("last_starring_state_sig") != state_sig:
+                    st.session_state["starring_table_version"] = st.session_state.get("starring_table_version", 0) + 1
+                    st.session_state["last_starring_state_sig"] = state_sig
+                    for k in list(st.session_state.keys()):
+                        if str(k).startswith("pred_roster_table_") and selected_club not in str(k):
+                            st.session_state.pop(k, None)
+
+                table_ver = st.session_state.get("starring_table_version", 1)
+
+                table_container = st.container(key=f"roster_wrap_{selected_club}_{table_ver}")
+                with table_container:
+                    st.dataframe(
+                        disp_roster[valid_disp_cols],
+                        hide_index=True,
+                        column_config=get_standard_column_config(),
+                        key=f"pred_roster_table_{domain}_{selected_club}_{chosen_tier}_v{table_ver}"
+                    )
+
+                # Reset DOM scroll container to ensure the table displays starting at Rank 1 down
+                st.html("""
+                <svg width="0" height="0" style="position:absolute;display:none" onload="
+                    try {
+                        var resetFn = function() {
+                            var scrollers = document.getElementsByClassName('dvn-scroller');
+                            for (var i = 0; i < scrollers.length; i++) {
+                                if (scrollers[i].scrollTop > 0) {
+                                    scrollers[i].scrollTop = 0;
+                                    scrollers[i].dispatchEvent(new Event('scroll'));
+                                }
+                                if (scrollers[i].scrollLeft > 0) {
+                                    scrollers[i].scrollLeft = 0;
+                                    scrollers[i].dispatchEvent(new Event('scroll'));
+                                }
+                            }
+                        };
+                        resetFn();
+                        requestAnimationFrame(resetFn);
+                        setTimeout(resetFn, 50);
+                        setTimeout(resetFn, 150);
+                        setTimeout(resetFn, 300);
+                    } catch(e) {}
+                "></svg>
+                """)
+
+                wb_out = sr.build_club_projected_starring_workbook(roster_df, selected_club)
+                buf = io.BytesIO()
+                wb_out.save(buf)
+                wb_out.close()
+
+                st.download_button(
+                    label=f"📥 Download {selected_club} 2027 Projected Starring (Excel)",
+                    data=buf.getvalue(),
+                    file_name=f"{selected_club.replace(' ', '_')}_2027_Projected_Starring_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    type="primary",
+                    key=f"dl_pred_excel_{domain}_{selected_club}"
+                )
+
+            with tab_comp:
+                st.subheader(f"🔄 {selected_club} — Starring Movement Analysis (2026 vs 2027)")
+                st.caption("Detailed breakdown of projected promotions up the senior ladder and relegated/at-risk players down.")
+
+                comp_cols = ["Projected_Rank", "Player", "Role", "2026_Starred_Tier", "2027_Predicted_Tier", "Status", "Primary_Team", "Projected_Rating", "Runs", "Wickets"]
+
+                st.markdown("#### 🟢 Promoted Players")
+                prom_df = roster_df[roster_df["Status"] == "🟢 Promoted"]
+                if prom_df.empty:
+                    st.info("No promoted players under current parameters.")
+                else:
+                    if "Projected_Rank" in prom_df.columns:
+                        prom_df = prom_df.sort_values(by="Projected_Rank", ascending=True).reset_index(drop=True)
+                    v_prom_cols = [c for c in comp_cols if c in prom_df.columns]
+                    st.dataframe(
+                        prom_df[v_prom_cols],
+                        hide_index=True,
+                        column_config=get_standard_column_config(),
+                        key=f"pred_prom_table_{domain}_{selected_club}_v{table_ver}"
+                    )
+
+                st.divider()
+
+                st.markdown("#### 🟠 Relegated / At-Risk Players")
+                rel_df = roster_df[roster_df["Status"] == "🟠 Relegated"]
+                if rel_df.empty:
+                    st.info("No relegated players under current parameters.")
+                else:
+                    if "Projected_Rank" in rel_df.columns:
+                        rel_df = rel_df.sort_values(by="Projected_Rank", ascending=True).reset_index(drop=True)
+                    v_rel_cols = [c for c in comp_cols if c in rel_df.columns]
+                    st.dataframe(
+                        rel_df[v_rel_cols],
+                        hide_index=True,
+                        column_config=get_standard_column_config(),
+                        key=f"pred_rel_table_{domain}_{selected_club}_v{table_ver}"
+                    )
+
+            with tab_insp:
+                st.subheader("📊 Individual Player Performance Breakdown")
+                insp_player = st.selectbox(
+                    "Select Player to Inspect:",
+                    options=all_player_names,
+                    key=f"insp_player_sel_{domain}_{selected_club}"
+                )
+                if insp_player:
+                    p_row = roster_df[roster_df["Player"] == insp_player].iloc[0]
+                    col_p1, col_p2, col_p3, col_p4, col_p5 = st.columns(5)
+                    with col_p1: st.metric("Role", str(p_row.get("Role", "🏏 Batter")))
+                    with col_p2: st.metric("Projected Rating", f"{p_row.get('Projected_Rating', 0):.1f}")
+                    with col_p3: st.metric("Performance Score", f"{p_row.get('Performance_Score', 0):.1f}")
+                    with col_p4: st.metric("Inertia Bonus", f"+{p_row.get('Inertia_Bonus', 0):.1f}")
+                    with col_p5: st.metric("Primary Team", f"{p_row.get('Primary_Team', '—')}")
+
+                    matches = p_row.get("Match_Performances", [])
+                    if matches:
+                        df_m = pd.DataFrame(matches)
+                        p_team = p_row.get("Primary_Team", "")
+
+                        # Ensure Opposition column is present
+                        if "Opposition" not in df_m.columns and "Group" in df_m.columns:
+                            df_m["Opposition"] = df_m["Group"].apply(lambda g: eng.determine_opposition_team(str(g), str(p_team), selected_club))
+                        elif "Opposition" in df_m.columns and "Group" in df_m.columns:
+                            df_m["Opposition"] = df_m.apply(
+                                lambda r: r["Opposition"] if r.get("Opposition") and r.get("Opposition") != "—" else eng.determine_opposition_team(str(r.get("Group", "")), str(p_team), selected_club),
+                                axis=1
+                            )
+
+                        # Ensure Date column and sort date are present
+                        if "Date" not in df_m.columns and "Group" in df_m.columns:
+                            df_m["_sort_date"] = df_m["Group"].apply(eng.extract_match_date)
+                            df_m["Date"] = df_m["_sort_date"].apply(lambda d: d.strftime("%d %b %Y") if d else "—")
+                        elif "_sort_date" not in df_m.columns and "Group" in df_m.columns:
+                            df_m["_sort_date"] = df_m["Group"].apply(eng.extract_match_date)
+
+                        # Filter out matches that the player didn't play in (no runs, wickets, catches, stumpings)
+                        df_m = df_m[
+                            (df_m.get("Runs", 0) > 0) |
+                            (df_m.get("Wickets", 0) > 0) |
+                            (df_m.get("Catches", 0) > 0) |
+                            (df_m.get("Stumpings", 0) > 0)
+                        ]
+
+                        # Initial sort by date with earliest date first
+                        if "_sort_date" in df_m.columns:
+                            df_m = df_m.sort_values(by="_sort_date", ascending=True, na_position="last")
+
+                        if not df_m.empty:
+                            st.markdown("##### Match-by-Match Performance Breakdown (2026)")
+                            m_cols = ["Tier", "Opposition", "Date", "Comp", "Runs", "50s", "100s", "Wickets", "5W", "Catches", "Stumpings"]
+                            v_m_cols = [c for c in m_cols if c in df_m.columns]
+                            st.dataframe(
+                                df_m[v_m_cols],
+                                hide_index=True,
+                                column_config=get_standard_column_config(),
+                                key=f"insp_matches_table_{domain}_{selected_club}_{insp_player}"
+                            )
+                        else:
+                            st.info("No recorded active match performances for this player in 2026.")
+
+                    st.markdown("##### Season Statistics Summary")
+                    summary_data = [
+                        {"Metric": "Role", "Value": str(p_row.get("Role", "🏏 Batter"))},
+                        {"Metric": "Runs Scored", "Value": str(int(p_row.get("Runs", 0)))},
+                        {"Metric": "High Score", "Value": str(p_row.get("High_Score", 0))},
+                        {"Metric": "50s / 100s", "Value": f"{p_row.get('50s', 0)} / {p_row.get('100s', 0)}"},
+                        {"Metric": "Wickets Taken", "Value": str(int(p_row.get("Wickets", 0)))},
+                        {"Metric": "Maidens Bowled", "Value": str(int(p_row.get("Maidens", 0)))},
+                        {"Metric": "Runs Conceded", "Value": str(int(p_row.get("Runs_Conceded", 0)))},
+                        {"Metric": "Best Bowling", "Value": str(p_row.get("Best_Bowling", "—"))},
+                        {"Metric": "Catches (Outfield)", "Value": str(int(p_row.get("Catches", 0)))},
+                        {"Metric": "Catches as Keeper / Stumpings", "Value": f"{p_row.get('Catches_As_Keeper', 0)} / {p_row.get('Stumpings', 0)}"},
+                        {"Metric": "2026 Official Starred Tier", "Value": str(p_row.get("2026_Starred_Tier", "Unstarred"))},
+                        {"Metric": "2027 Predicted Tier", "Value": str(p_row.get("2027_Predicted_Tier", "Unstarred"))},
+                        {"Metric": "Movement Status", "Value": str(p_row.get("Status", "—"))}
+                    ]
+                    df_sum = pd.DataFrame(summary_data)
+                    st.dataframe(
+                        df_sum,
+                        hide_index=True,
+                        column_config={
+                            "Metric": st.column_config.TextColumn("Metric", alignment="left", width="medium"),
+                            "Value": st.column_config.TextColumn("Value", alignment="center", width="small")
+                        },
+                        key=f"insp_summary_table_{domain}_{selected_club}_{insp_player}"
+                    )
+
+            with tab_audit:
+                st.subheader(f"🔍 {selected_club} — 2027 In-Season Roster Audit & Realism Monitor")
+                st.caption("Detects early-season paper squad padding (top-tier ghost stars), lower-tier over-performance (smurfing), and specialist wicket-keeper balance.")
+
+                # Resolve international duty exemptions (synchronize active predictor selections + persisted register)
+                intl_exempt_set = {str(p).strip().lower() for p in (intl_exempt_players or []) if str(p).strip()}
+                starring_hist_path = resolve_starring_history_path()
+                if starring_hist_path and os.path.exists(starring_hist_path):
+                    try:
+                        df_intl = eng.read_excel_calamine(starring_hist_path, sheet_name="International Exemptions")
+                        if df_intl is not None and not df_intl.empty:
+                            i_col = next((c for c in ["Player", "Name", "Full Name"] if c in df_intl.columns), df_intl.columns[0])
+                            for val in df_intl[i_col].dropna():
+                                intl_exempt_set.add(str(val).strip().lower())
+                    except Exception:
+                        pass
+
+                df_ghosts = sr.detect_ghost_stars(roster_df, international_exemptions=intl_exempt_set, dispensations=club_disp_df)
+                df_overperf = sr.evaluate_lower_tier_overperformance(perf_matrix, team_count=int(sim_teams), domain=domain, dispensations=club_disp_df)
+                keeper_audit = sr.audit_first_xi_wicket_keeper_balance(roster_df)
+
+                col_a1, col_a2, col_a3, col_a4 = st.columns(4)
+                with col_a1:
+                    st.metric(
+                        "Ghost Stars Flagged",
+                        f"{len(df_ghosts)}",
+                        delta="Paper Padding" if len(df_ghosts) > 0 else "Compliant",
+                        delta_color="inverse" if len(df_ghosts) > 0 else "off"
+                    )
+                with col_a2:
+                    st.metric(
+                        "Lower-Tier Over-Performers",
+                        f"{len(df_overperf)}",
+                        delta="Smurfing Alerts" if len(df_overperf) > 0 else "Compliant",
+                        delta_color="inverse" if len(df_overperf) > 0 else "off"
+                    )
+                with col_a3:
+                    wk_ok = keeper_audit.get("is_compliant", True)
+                    st.metric(
+                        "1st XI Keeper Status",
+                        "✅ Covered" if wk_ok else "⚠️ Missing",
+                        delta=f"{len(keeper_audit.get('first_xi_keepers', []))} Keeper(s)" if wk_ok else "0 Keepers",
+                        delta_color="normal" if wk_ok else "inverse"
+                    )
+                with col_a4:
+                    audit_status = "⚠️ Action Required" if (len(df_ghosts) + len(df_overperf) > 0 or not keeper_audit.get("is_compliant", True)) else "✅ Fully Realistic"
+                    st.metric("Roster Realism Status", audit_status)
+
+                st.divider()
+
+                st.markdown("#### 1. Roster Padding & Ghost Star Alerts")
+                st.caption("Starred 1st XI / 2nd XI assets with 0 matches or >= 3 weeks inactivity in early season, lacking International Duty Exemptions.")
+                if df_ghosts.empty:
+                    st.success("✅ No top-tier ghost stars or paper squad padding detected for this club roster.")
+                else:
+                    st.dataframe(
+                        df_ghosts,
+                        hide_index=True,
+                        column_config=get_standard_column_config(),
+                        key=f"audit_ghosts_table_{domain}_{selected_club}"
+                    )
+
+                st.divider()
+
+                st.markdown("#### 2. Lower-Tier Performance Outliers & Promotion Tracks")
+                st.caption("Unstarred or 3rd XI / 4th XI players breaching early-season statistical ceilings (min 3 batting innings or min 15 bowling overs), paired with automated upward promotion cascades.")
+                if df_overperf.empty:
+                    st.success("✅ No lower-tier over-performance outliers detected under early-season ceilings.")
+                else:
+                    st.dataframe(
+                        df_overperf,
+                        hide_index=True,
+                        column_config=get_standard_column_config(),
+                        key=f"audit_overperf_table_{domain}_{selected_club}"
+                    )
+
+                st.divider()
+
+                st.markdown("#### 3. Specialist Wicket-Keeper Balance Audit")
+                st.caption("Verifies that the projected 1st XI starring roster includes at least one specialist wicket-keeper (`🧤 WK`).")
+                if keeper_audit.get("is_compliant", True):
+                    keepers_str = ", ".join(keeper_audit.get("first_xi_keepers", []))
+                    st.success(f"✅ **1st XI Specialist Keeper Roster Realism Passed:** Designated specialist gloveman identified in 1st XI ({keepers_str}).")
+                else:
+                    top_cand = keeper_audit.get("top_candidate")
+                    top_tier = keeper_audit.get("top_candidate_tier")
+                    top_disms = keeper_audit.get("top_candidate_dismissals", 0)
+                    warn_msg = "⚠️ **Warning: No specialist wicket-keeper (`🧤 WK`) is projected in the 1st XI starring list.** Every realistic matchday squad requires a recognized gloveman."
+                    if top_cand:
+                        warn_msg += f"\n\n👉 **Recommended Adjustment:** Highest ranked specialist keeper in lower tiers is **{top_cand}** ({top_tier}, {top_disms} keeping dismissals). Consider using the *Manually Lock Players to 1st XI* override above if this player will be keeping for the 1st XI in 2027."
+                    st.warning(warn_msg)
+
 
 # ==========================================
 # TOOL 4: STARRING & INACTIVITY REPORTS

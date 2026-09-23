@@ -16,8 +16,9 @@ from datetime import datetime
 import os
 import re
 from typing import Any, Dict, List, Optional, Set, Tuple
+import openpyxl
 import pandas as pd
-from engine import read_excel_calamine
+from engine import read_excel_calamine, strip_club_suffix, format_excel_worksheet_standard
 
 # Canonical tier hierarchy ordered from highest (1st XI) to lowest (6th XI)
 TIER_HIERARCHY = ["1st XI", "2nd XI", "3rd XI", "4th XI", "5th XI", "6th XI"]
@@ -79,11 +80,11 @@ def sort_starring_roster_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     elif "Last Name" in res.columns:
         res["_surname"] = res["Last Name"].fillna("").astype(str).str.strip().str.lower()
     elif "Full Name" in res.columns:
-        res["_surname"] = res["Full Name"].apply(lambda n: str(n).strip().split()[-1].lower() if str(n).strip() else "")
+        res["_surname"] = res["Full Name"].apply(lambda n: strip_club_suffix(str(n)).strip().split()[-1].lower() if str(n).strip() else "")
     elif "Player" in res.columns:
-        res["_surname"] = res["Player"].apply(lambda n: str(n).strip().split()[-1].lower() if str(n).strip() else "")
+        res["_surname"] = res["Player"].apply(lambda n: strip_club_suffix(str(n)).strip().split()[-1].lower() if str(n).strip() else "")
     elif "Name" in res.columns:
-        res["_surname"] = res["Name"].apply(lambda n: str(n).strip().split()[-1].lower() if str(n).strip() else "")
+        res["_surname"] = res["Name"].apply(lambda n: strip_club_suffix(str(n)).strip().split()[-1].lower() if str(n).strip() else "")
     else:
         res["_surname"] = ""
 
@@ -680,7 +681,7 @@ def get_club_registered_players_list(
     if df_reg is None or df_reg.empty or not club_name:
         if club_star_df is not None and not club_star_df.empty and "Full Name" in club_star_df.columns:
             starred_names = [resolve_nv_name(str(n).strip()) for n in club_star_df["Full Name"].dropna() if str(n).strip()]
-            return sorted(list(set(starred_names)), key=lambda x: (x.split()[-1].lower() if x.split() else "", x.lower()))
+            return sort_players_by_surname(set(starred_names))
         return []
 
     df = df_reg.copy()
@@ -765,19 +766,50 @@ def get_club_registered_players_list(
             if sn.lower() not in ["nan", "none", ""]:
                 matched_names.add(resolve_nv_name(sn))
 
-    # Final deduplication pass ensuring all entries are resolved NV Play names
-    deduped_names = {resolve_nv_name(n) for n in matched_names if n and n.lower() not in ["nan", "none", ""]}
+    # Final deduplication pass ensuring all entries are resolved NV Play names with club/team suffixes stripped
+    deduped_names = {strip_club_suffix(resolve_nv_name(n), club_name) for n in matched_names if n and n.lower() not in ["nan", "none", ""]}
 
-    # Sort alphabetically by Surname, then First Name
-    def sort_key(name: str) -> Tuple[str, str]:
-        parts = name.strip().split()
-        if not parts:
-            return ("", "")
-        surname = parts[-1].lower()
-        forename = " ".join(parts[:-1]).lower() if len(parts) > 1 else ""
-        return (surname, forename)
+    return sort_players_by_surname(deduped_names)
 
-    return sorted(list(deduped_names), key=sort_key)
+
+def player_surname_sort_key(name: str) -> Tuple[str, str]:
+    """
+    Sort key that orders player names alphabetically by surname first, then forename(s).
+    e.g. 'Mark Adair' -> ('adair', 'mark')
+         'Ross Adair' -> ('adair', 'ross')
+         'Paul Stirling' -> ('stirling', 'paul')
+
+    Inputs:
+        name: Player name string.
+
+    Outputs:
+        Tuple[str, str]: (surname_lowercase, forename_lowercase).
+
+    Helper Apps:
+        app.py, secretary_app.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    parts = str(name).strip().split()
+    if not parts:
+        return ("", "")
+    surname = parts[-1].lower()
+    forename = " ".join(parts[:-1]).lower() if len(parts) > 1 else ""
+    return (surname, forename)
+
+
+def sort_players_by_surname(names: Iterable[str]) -> List[str]:
+    """
+    Sorts an iterable of player names alphabetically by surname first, then forename(s).
+
+    Inputs:
+        names: Iterable of player name strings.
+
+    Outputs:
+        List[str]: List of sorted player names.
+
+    Helper Apps:
+        app.py, secretary_app.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    return sorted(list(names), key=player_surname_sort_key)
 
 
 def log_starring_override_change(
@@ -1084,6 +1116,353 @@ def load_international_exemptions(
         return None
 
 
+def load_board_dispensations(
+    club_name: Optional[str] = None,
+    season: Optional[int] = 2027,
+    file_path: str = "NCU_Club_Starring_History.xlsx"
+) -> pd.DataFrame:
+    """
+    Loads Board-Approved Executive Availability Dispensations from NCU_Club_Starring_History.xlsx.
+    If the 'Board_Dispensations' worksheet is missing, automatically creates and seeds it
+    with the default approved exception:
+    Simon King | Larne | 2nd XI | "Cannot play Saturdays - Sunday availability only" | 2027.
+    Enforces GEMINI.md styling (navy fill, bold white text, A2 freeze panes, dynamic column widths).
+
+    Inputs:
+        club_name: Optional club name to filter results (e.g. 'Larne').
+        season: Optional season to filter results (e.g. 2027).
+        file_path: Excel workbook path (default 'NCU_Club_Starring_History.xlsx').
+
+    Outputs:
+        pd.DataFrame: Table of active executive availability dispensations.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_starring_rules.py.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    headers = ["Player Name", "Club Name", "Allowed Lower Tier", "Dispensation Reason", "Effective Season"]
+
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    wb = None
+    needs_seeding = False
+
+    if os.path.exists(file_path):
+        try:
+            wb = openpyxl.load_workbook(file_path)
+            if "Board_Dispensations" not in wb.sheetnames:
+                needs_seeding = True
+        except Exception:
+            wb = None
+            needs_seeding = True
+    else:
+        needs_seeding = True
+
+    if wb is None:
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Board_Dispensations"
+    elif "Board_Dispensations" in wb.sheetnames:
+        ws = wb["Board_Dispensations"]
+    else:
+        ws = wb.create_sheet("Board_Dispensations")
+
+    if needs_seeding or (ws.max_row <= 1 and ws.cell(row=1, column=1).value != "Player Name"):
+        ws.delete_rows(1, max(ws.max_row + 1, 10))
+        ws.append(headers)
+        # Default seed entry
+        ws.append([
+            "Simon King",
+            "Larne",
+            "2nd XI",
+            "Cannot play Saturdays - Sunday availability only",
+            2027
+        ])
+
+        header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in ws[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+
+        ws.freeze_panes = "A2"
+
+        for col in ws.columns:
+            max_len = 0
+            col_letter = get_column_letter(col[0].column)
+            for cell in col:
+                val_str = str(cell.value or "")
+                if len(val_str) > max_len:
+                    max_len = len(val_str)
+            ws.column_dimensions[col_letter].width = max(max_len + 2, 10)
+
+        wb.save(file_path)
+
+    records: List[Dict[str, Any]] = []
+    exist_headers = [str(ws.cell(row=1, column=c).value or "").strip() for c in range(1, ws.max_column + 1)]
+    for r in range(2, ws.max_row + 1):
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        if any(v is not None for v in row_vals):
+            rec = {exist_headers[i]: row_vals[i] for i in range(min(len(exist_headers), len(row_vals)))}
+            p_name = str(rec.get("Player Name", "")).strip()
+            if p_name and p_name != "None":
+                try:
+                    eff_season = int(rec.get("Effective Season", 2027))
+                except (ValueError, TypeError):
+                    eff_season = 2027
+                records.append({
+                    "Player Name": p_name,
+                    "Club Name": str(rec.get("Club Name", "")).strip(),
+                    "Allowed Lower Tier": str(rec.get("Allowed Lower Tier", "2nd XI")).strip(),
+                    "Dispensation Reason": str(rec.get("Dispensation Reason", "")).strip(),
+                    "Effective Season": eff_season
+                })
+
+    try:
+        wb.close()
+    except Exception:
+        pass
+
+    df = pd.DataFrame(records)
+    if df.empty:
+        df = pd.DataFrame(columns=headers)
+
+    if club_name:
+        c_clean = club_name.strip().lower()
+        df = df[df["Club Name"].astype(str).str.strip().str.lower() == c_clean]
+
+    if season is not None:
+        s_val = int(season)
+        df = df[df["Effective Season"] == s_val]
+
+    return df.reset_index(drop=True)
+
+
+def save_board_dispensation(
+    player_name: str,
+    club_name: str,
+    allowed_lower_tier: str,
+    dispensation_reason: str,
+    effective_season: int = 2027,
+    file_path: str = "NCU_Club_Starring_History.xlsx"
+) -> Dict[str, Any]:
+    """
+    Appends or updates an individual Board-Approved Executive Availability Dispensation
+    in the 'Board_Dispensations' worksheet of NCU_Club_Starring_History.xlsx.
+    Maintains GEMINI.md styling (navy fill, bold white text, A2 freeze panes, dynamic column widths).
+
+    Inputs:
+        player_name: Player receiving the dispensation.
+        club_name: Player's registered club.
+        allowed_lower_tier: Approved lower playing level (e.g. '2nd XI').
+        dispensation_reason: Formal rationale (e.g. 'Cannot play Saturdays - Sunday availability only').
+        effective_season: Year of applicability (default 2027).
+        file_path: Target Excel file.
+
+    Outputs:
+        Dict[str, Any]: Saved record details.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_starring_rules.py.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    p_clean = str(player_name).strip()
+    c_clean = str(club_name).strip()
+    tier_clean = str(allowed_lower_tier).strip()
+    reason_clean = str(dispensation_reason).strip()
+    season_val = int(effective_season)
+
+    # Ensure sheet exists by loading
+    _ = load_board_dispensations(file_path=file_path)
+
+    wb = openpyxl.load_workbook(file_path)
+    ws = wb["Board_Dispensations"]
+
+    headers = ["Player Name", "Club Name", "Allowed Lower Tier", "Dispensation Reason", "Effective Season"]
+
+    records: List[Dict[str, Any]] = []
+    exist_headers = [str(ws.cell(row=1, column=c).value or "").strip() for c in range(1, ws.max_column + 1)]
+    for r in range(2, ws.max_row + 1):
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        if any(v is not None for v in row_vals):
+            rec = {exist_headers[i]: row_vals[i] for i in range(min(len(exist_headers), len(row_vals)))}
+            p_val = str(rec.get("Player Name", "")).strip()
+            if p_val and p_val != "None":
+                records.append(rec)
+
+    matched = False
+    new_rec = {
+        "Player Name": p_clean,
+        "Club Name": c_clean,
+        "Allowed Lower Tier": tier_clean,
+        "Dispensation Reason": reason_clean,
+        "Effective Season": season_val
+    }
+
+    for r in records:
+        if (
+            str(r.get("Player Name", "")).strip().lower() == p_clean.lower()
+            and str(r.get("Club Name", "")).strip().lower() == c_clean.lower()
+            and int(r.get("Effective Season", 2027)) == season_val
+        ):
+            r["Allowed Lower Tier"] = tier_clean
+            r["Dispensation Reason"] = reason_clean
+            matched = True
+            break
+
+    if not matched:
+        records.append(new_rec)
+
+    ws.delete_rows(1, max(ws.max_row + 1, 10))
+    ws.append(headers)
+    for r in records:
+        ws.append([
+            r.get("Player Name", ""),
+            r.get("Club Name", ""),
+            r.get("Allowed Lower Tier", ""),
+            r.get("Dispensation Reason", ""),
+            int(r.get("Effective Season", 2027))
+        ])
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    ws.freeze_panes = "A2"
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or "")
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        ws.column_dimensions[col_letter].width = max(max_len + 2, 10)
+
+    wb.save(file_path)
+    return new_rec
+
+
+save_board_dispensations = save_board_dispensation
+
+
+def delete_board_dispensation(
+    player_name: str,
+    club_name: Optional[str] = None,
+    effective_season: Optional[int] = 2027,
+    file_path: str = "NCU_Club_Starring_History.xlsx"
+) -> bool:
+    """
+    Removes an individual Board-Approved Executive Availability Dispensation record
+    from the 'Board_Dispensations' worksheet in NCU_Club_Starring_History.xlsx.
+    Maintains GEMINI.md styling (navy fill, bold white text, A2 freeze panes, dynamic column widths).
+
+    Inputs:
+        player_name: Player to remove from dispensations.
+        club_name: Optional club name to match.
+        effective_season: Optional season year (default 2027).
+        file_path: Target Excel file.
+
+    Outputs:
+        bool: True if an entry was matched and deleted, False otherwise.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_starring_rules.py.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    p_clean = str(player_name).strip().lower()
+    c_clean = str(club_name).strip().lower() if club_name else None
+
+    if not os.path.exists(file_path):
+        return False
+
+    wb = openpyxl.load_workbook(file_path)
+    if "Board_Dispensations" not in wb.sheetnames:
+        wb.close()
+        return False
+
+    ws = wb["Board_Dispensations"]
+    headers = ["Player Name", "Club Name", "Allowed Lower Tier", "Dispensation Reason", "Effective Season"]
+
+    records: List[Dict[str, Any]] = []
+    exist_headers = [str(ws.cell(row=1, column=c).value or "").strip() for c in range(1, ws.max_column + 1)]
+    removed = False
+
+    for r in range(2, ws.max_row + 1):
+        row_vals = [ws.cell(row=r, column=c).value for c in range(1, ws.max_column + 1)]
+        if any(v is not None for v in row_vals):
+            rec = {exist_headers[i]: row_vals[i] for i in range(min(len(exist_headers), len(row_vals)))}
+            p_val = str(rec.get("Player Name", "")).strip().lower()
+            c_val = str(rec.get("Club Name", "")).strip().lower()
+            try:
+                s_val = int(rec.get("Effective Season", 2027))
+            except Exception:
+                s_val = 2027
+
+            match_player = (p_val == p_clean)
+            match_club = (c_clean is None or c_val == c_clean)
+            match_season = (effective_season is None or s_val == int(effective_season))
+
+            if match_player and match_club and match_season:
+                removed = True
+                continue
+            if p_val and p_val != "none":
+                records.append(rec)
+
+    if not removed:
+        wb.close()
+        return False
+
+    ws.delete_rows(1, max(ws.max_row + 1, 10))
+    ws.append(headers)
+    for r in records:
+        ws.append([
+            r.get("Player Name", ""),
+            r.get("Club Name", ""),
+            r.get("Allowed Lower Tier", ""),
+            r.get("Dispensation Reason", ""),
+            int(r.get("Effective Season", 2027))
+        ])
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    for cell in ws[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+
+    ws.freeze_panes = "A2"
+
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            val_str = str(cell.value or "")
+            if len(val_str) > max_len:
+                max_len = len(val_str)
+        ws.column_dimensions[col_letter].width = max(max_len + 2, 10)
+
+    wb.save(file_path)
+    wb.close()
+    return True
+
+
+delete_board_dispensations = delete_board_dispensation
+
+
+
 def get_club_starred_roster_sorted(club_star_df: pd.DataFrame) -> List[str]:
     """
     Extracts and returns only the currently starred roster player names for a club,
@@ -1108,11 +1487,11 @@ def get_club_starred_roster_sorted(club_star_df: pd.DataFrame) -> List[str]:
 
     result: List[str] = []
     for _, row in sorted_df.iterrows():
-        p_name = str(row.get("Full Name", "")).strip()
+        p_name = strip_club_suffix(str(row.get("Full Name", "")).strip())
         if not p_name or p_name.lower() == "nan":
             fn = str(row.get("Forename", "")).strip()
             sn = str(row.get("Surname", "")).strip()
-            p_name = f"{fn} {sn}".strip()
+            p_name = strip_club_suffix(f"{fn} {sn}".strip())
         if p_name and p_name not in result:
             result.append(p_name)
     return result
@@ -1601,3 +1980,933 @@ def evaluate_player_transfers(
         "club_summary": club_summary,
         "total_fees_assessed": total_fees
     }
+
+
+# ==============================================================================
+# RULE A10 / WA10: 2027 WATERFALL STARRING ROSTER ALLOCATOR
+# ==============================================================================
+
+def allocate_waterfall_starring_roster(
+    player_data_df: pd.DataFrame,
+    team_count: Optional[int] = None,
+    domain: str = "Men's",
+    manual_locks: Optional[List[str]] = None,
+    departures: Optional[List[str]] = None,
+    dispensations: Optional[Union[Dict[str, str], pd.DataFrame, Set[str], List[Dict[str, Any]]]] = None,
+    num_teams: Optional[int] = None
+) -> pd.DataFrame:
+    """
+    Ranks club players by projected performance rating, respects manual locks, departures,
+    and Board-Approved Executive Availability Dispensations, and applies strict Rule A10 / Rule WA10
+    waterfall tier quotas to assign 2027 predicted starrings.
+
+    Inputs:
+        player_data_df: DataFrame with player performance, 2026 starring tier, and 'Projected_Rating'.
+        team_count: Number of senior teams fielded by the club (e.g. 2 to 6).
+        domain: Competition domain ("Men's" or "Women's").
+        manual_locks: Optional list of player names locked to 1st XI (e.g. captain, overseas pro).
+        departures: Optional list of player names who are leaving/transferred (excluded from quota).
+        dispensations: Optional dictionary, DataFrame, or list of Board-Approved Availability Dispensations
+                       mapping player names to their authorized lower tier (e.g. {'Simon King': '2nd XI'}).
+        num_teams: Optional alias for team_count.
+
+    Outputs:
+        pd.DataFrame: Complete roster with 'Projected_Rank', '2027_Predicted_Tier', and 'Status' flags.
+
+    Helper Apps:
+        app.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    if player_data_df is None or player_data_df.empty:
+        return pd.DataFrame()
+
+    effective_team_count = team_count if team_count is not None else (num_teams if num_teams is not None else 2)
+    df = player_data_df.copy()
+    if "Player" in df.columns:
+        df["Player"] = df["Player"].apply(lambda p: strip_club_suffix(str(p)))
+    quotas = get_starring_quotas(effective_team_count, domain)
+
+    locks_set = set(str(p).strip().lower() for p in (manual_locks or []))
+    departures_set = set(str(p).strip().lower() for p in (departures or []))
+
+    disp_map: Dict[str, str] = {}
+    if dispensations is not None:
+        if isinstance(dispensations, pd.DataFrame):
+            p_col = next((c for c in ["Player Name", "Player", "Full Name", "Name"] if c in dispensations.columns), None)
+            t_col = next((c for c in ["Allowed Lower Tier", "Allowed Tier", "Tier", "Target Tier"] if c in dispensations.columns), None)
+            if p_col and t_col:
+                for _, d_row in dispensations.iterrows():
+                    pn = str(d_row.get(p_col, "")).strip().lower()
+                    pt = str(d_row.get(t_col, "2nd XI")).strip()
+                    if pn:
+                        disp_map[pn] = pt
+        elif isinstance(dispensations, dict):
+            for k, v in dispensations.items():
+                disp_map[str(k).strip().lower()] = str(v).strip()
+        elif isinstance(dispensations, (list, set)):
+            for item in dispensations:
+                if isinstance(item, dict):
+                    pn = str(item.get("Player Name", item.get("Player", ""))).strip().lower()
+                    pt = str(item.get("Allowed Lower Tier", item.get("Tier", "2nd XI"))).strip()
+                    if pn:
+                        disp_map[pn] = pt
+                else:
+                    disp_map[str(item).strip().lower()] = "2nd XI"
+
+    def tier_num(t: Any) -> int:
+        s = str(t).lower().strip()
+        if "1st" in s: return 1
+        if "2nd" in s: return 2
+        if "3rd" in s: return 3
+        if "4th" in s: return 4
+        if "5th" in s: return 5
+        if "6th" in s: return 6
+        return 99
+
+    departing_rows: List[Dict[str, Any]] = []
+    locked_rows: List[Dict[str, Any]] = []
+    dispensation_rows: List[Dict[str, Any]] = []
+    pool_rows: List[Dict[str, Any]] = []
+
+    for _, row in df.iterrows():
+        p_name = str(row.get("Player", "")).strip()
+        p_low = p_name.lower()
+        r_dict = dict(row)
+
+        disp_field = str(row.get("Availability_Dispensation", "")).strip()
+        if disp_field and disp_field.lower() not in ["none", "nan", "", "false"]:
+            disp_map.setdefault(p_low, disp_field)
+
+        if p_low in departures_set:
+            r_dict["2027_Predicted_Tier"] = "Departing"
+            r_dict["Status"] = "⚪ Departing"
+            departing_rows.append(r_dict)
+            continue
+
+        if p_low in disp_map:
+            target_tier = disp_map[p_low]
+            r_dict["2027_Predicted_Tier"] = target_tier
+            r_dict["Status"] = f"📜 Dispensation ({target_tier})"
+            r_dict["Availability_Dispensation"] = target_tier
+            dispensation_rows.append(r_dict)
+            continue
+
+        is_auto_lock = bool(row.get("Is_International", False) or row.get("Is_Overseas_Pro", False))
+        if p_low in locks_set or is_auto_lock:
+            r_dict["2027_Predicted_Tier"] = "1st XI"
+            r_dict["Status"] = "⭐ Locked"
+            locked_rows.append(r_dict)
+            continue
+
+        pool_rows.append(r_dict)
+
+    pool_rows.sort(
+        key=lambda x: (
+            float(x.get("Projected_Rating", 0)),
+            int(x.get("Runs", 0)),
+            int(x.get("Wickets", 0)),
+            -int(x.get("2026_Starred_Rank", 99))
+        ),
+        reverse=True
+    )
+
+    tier_order = ["1st XI", "2nd XI", "3rd XI", "4th XI", "5th XI", "6th XI"]
+    active_tiers = [t for t in tier_order if t in quotas]
+
+    capacity: Dict[str, int] = {t: quotas.get(t, 0) for t in active_tiers}
+    capacity["1st XI"] = max(0, capacity.get("1st XI", 0) - len(locked_rows))
+    for dr in dispensation_rows:
+        dt = dr.get("2027_Predicted_Tier", "")
+        if dt in capacity:
+            capacity[dt] = max(0, capacity[dt] - 1)
+
+    def is_eligible_for_tier(player_dict: Dict[str, Any], target_tier: str) -> bool:
+        """
+        Enforces primary team gravity constraint: If a player's modal appearance tier in 2026
+        was down in the 2nd XI or lower, they cannot be automatically pushed into a 1st XI starring
+        slot by points alone, unless they have a minimum of 2 appearances in the 1st XI.
+        """
+        if target_tier == "1st XI":
+            prim = str(player_dict.get("Primary_Team", "")).strip().lower()
+            is_lower_modal = any(t in prim for t in ["2nd", "3rd", "4th", "5th", "6th", "midweek"])
+            t_counts = player_dict.get("Tier_Counts") or {}
+            first_xi_apps = t_counts.get("1st XI", 0) if isinstance(t_counts, dict) else 0
+            if is_lower_modal and first_xi_apps < 2:
+                return False
+        return True
+
+    assigned_pool_rows: List[Dict[str, Any]] = []
+    allocated_indices: Set[int] = set()
+
+    for tier in active_tiers:
+        slots_needed = capacity.get(tier, 0)
+        filled = 0
+
+        # Pass 1: Allocate eligible players respecting primary team gravity constraint
+        for idx, r in enumerate(pool_rows):
+            if idx in allocated_indices:
+                continue
+            if filled >= slots_needed:
+                break
+            if is_eligible_for_tier(r, tier):
+                r_assigned = dict(r)
+                r_assigned["2027_Predicted_Tier"] = tier
+                assigned_pool_rows.append(r_assigned)
+                allocated_indices.add(idx)
+                filled += 1
+
+        # Pass 2: Fallback to fulfill remaining quota slots if eligible candidates were exhausted
+        if filled < slots_needed:
+            for idx, r in enumerate(pool_rows):
+                if idx in allocated_indices:
+                    continue
+                if filled >= slots_needed:
+                    break
+                r_assigned = dict(r)
+                r_assigned["2027_Predicted_Tier"] = tier
+                assigned_pool_rows.append(r_assigned)
+                allocated_indices.add(idx)
+                filled += 1
+
+    # Remaining unassigned players are allocated to lowest unstarred tier
+    lowest_unstarred_label = "Unstarred"
+    for idx, r in enumerate(pool_rows):
+        if idx not in allocated_indices:
+            r_assigned = dict(r)
+            r_assigned["2027_Predicted_Tier"] = lowest_unstarred_label
+            assigned_pool_rows.append(r_assigned)
+            allocated_indices.add(idx)
+
+    active_allocated = locked_rows + dispensation_rows + assigned_pool_rows
+
+    for r in active_allocated:
+        if r.get("Status") == "⭐ Locked" or "dispensation" in str(r.get("Status", "")).lower():
+            continue
+        curr_t = r.get("2026_Starred_Tier", "Unstarred")
+        pred_t = r.get("2027_Predicted_Tier", "Unstarred")
+
+        c_rank = tier_num(curr_t)
+        p_rank = tier_num(pred_t)
+
+        if p_rank < c_rank:
+            r["Status"] = "🟢 Promoted"
+        elif p_rank == c_rank:
+            r["Status"] = "🔵 Retained"
+        else:
+            r["Status"] = "🟠 Relegated"
+
+    active_allocated.sort(
+        key=lambda x: (
+            tier_num(x.get("2027_Predicted_Tier")),
+            -float(x.get("Projected_Rating", 0)),
+            -int(x.get("Runs", 0))
+        )
+    )
+
+    tier_counter: Dict[str, int] = {}
+    for idx, r in enumerate(active_allocated, start=1):
+        r["Projected_Rank"] = idx
+        t = r["2027_Predicted_Tier"]
+        tier_counter[t] = tier_counter.get(t, 0) + 1
+        r["Tier_Rank"] = tier_counter[t]
+
+    for idx, r in enumerate(departing_rows, start=len(active_allocated) + 1):
+        r["Projected_Rank"] = idx
+        r["Tier_Rank"] = idx
+
+    all_roster = active_allocated + departing_rows
+    for r in all_roster:
+        c_wk = int(r.get("Catches_As_Keeper", 0))
+        stumps = int(r.get("Stumpings", 0))
+        total_dism = int(r.get("Keeper_Dismissals", c_wk + stumps))
+        is_wk = bool(
+            r.get("Is_Wicket_Keeper", False) or
+            stumps > 0 or
+            c_wk >= 2 or
+            total_dism >= 3
+        )
+        r["Is_Wicket_Keeper"] = is_wk
+        r["Keeper_Dismissals"] = total_dism
+        runs = int(r.get("Runs", 0))
+        wkts = int(r.get("Wickets", 0))
+
+        if is_wk:
+            r["Role"] = "🧤 Wicket-Keeper"
+        elif runs >= 150 and wkts >= 8:
+            r["Role"] = "🏏 All-Rounder"
+        elif wkts >= 8:
+            r["Role"] = "🎯 Bowler"
+        else:
+            r["Role"] = "🏏 Batter"
+
+    res_df = pd.DataFrame(all_roster)
+    return res_df
+
+
+def audit_first_xi_wicket_keeper_balance(
+    roster_df: pd.DataFrame
+) -> Dict[str, Any]:
+    """
+    Audits the projected starring roster to verify whether the 1st XI contains
+    at least one recognized specialist wicket-keeper.
+
+    Inputs:
+        roster_df: DataFrame output of allocate_waterfall_starring_roster containing
+                   'Player', '2027_Predicted_Tier', 'Role', 'Is_Wicket_Keeper', 'Stumpings'.
+
+    Outputs:
+        Dict[str, Any]:
+            - 'is_compliant': bool (True if at least 1 keeper in 1st XI)
+            - 'first_xi_keepers': List[str] (names of keepers in 1st XI)
+            - 'top_candidate': Optional[str] (best keeper in club if 1st XI has none)
+            - 'top_candidate_tier': Optional[str]
+            - 'top_candidate_dismissals': int
+            - 'status_message': str
+
+    Helper Apps:
+        app.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    if roster_df is None or roster_df.empty:
+        return {
+            "is_compliant": False,
+            "first_xi_keepers": [],
+            "top_candidate": None,
+            "top_candidate_tier": None,
+            "top_candidate_dismissals": 0,
+            "status_message": "No roster data available."
+        }
+
+    first_xi = roster_df[roster_df["2027_Predicted_Tier"].astype(str).str.strip().str.lower() == "1st xi"]
+
+    first_xi_keepers: List[str] = []
+    for _, row in first_xi.iterrows():
+        p_name = str(row.get("Player", "")).strip()
+        c_wk = int(row.get("Catches_As_Keeper", 0))
+        stumps = int(row.get("Stumpings", 0))
+        total_dism = int(row.get("Keeper_Dismissals", c_wk + stumps))
+        is_wk = bool(
+            row.get("Is_Wicket_Keeper", False) or
+            "keeper" in str(row.get("Role", "")).lower() or
+            stumps > 0 or
+            c_wk >= 2 or
+            total_dism >= 3
+        )
+        if is_wk and p_name:
+            first_xi_keepers.append(p_name)
+
+    if first_xi_keepers:
+        top_k = first_xi_keepers[0]
+        top_k_row = first_xi[first_xi["Player"] == top_k].iloc[0] if not first_xi[first_xi["Player"] == top_k].empty else first_xi.iloc[0]
+        top_dism = int(top_k_row.get("Keeper_Dismissals", int(top_k_row.get("Catches_As_Keeper", 0)) + int(top_k_row.get("Stumpings", 0))))
+        return {
+            "is_compliant": True,
+            "first_xi_keepers": first_xi_keepers,
+            "top_candidate": top_k,
+            "top_candidate_tier": "1st XI",
+            "top_candidate_dismissals": top_dism,
+            "status_message": f"✅ Compliant: {', '.join(first_xi_keepers)} projected in 1st XI."
+        }
+
+    # If no keeper in 1st XI, find the best keeper candidate across the rest of the club
+    all_keepers: List[Dict[str, Any]] = []
+    for _, row in roster_df.iterrows():
+        c_wk = int(row.get("Catches_As_Keeper", 0))
+        stumps = int(row.get("Stumpings", 0))
+        total_dism = int(row.get("Keeper_Dismissals", c_wk + stumps))
+        is_wk = bool(
+            row.get("Is_Wicket_Keeper", False) or
+            "keeper" in str(row.get("Role", "")).lower() or
+            stumps > 0 or
+            c_wk >= 2 or
+            total_dism >= 3
+        )
+        if is_wk:
+            k_dict = dict(row)
+            k_dict["Keeper_Dismissals"] = total_dism
+            all_keepers.append(k_dict)
+
+    if all_keepers:
+        all_keepers.sort(
+            key=lambda x: (
+                int(x.get("Keeper_Dismissals", int(x.get("Stumpings", 0)) + int(x.get("Catches_As_Keeper", 0)))),
+                float(x.get("Projected_Rating", 0))
+            ),
+            reverse=True
+        )
+        top_cand = all_keepers[0]
+        top_name = str(top_cand.get("Player", "")).strip()
+        top_tier = str(top_cand.get("2027_Predicted_Tier", "2nd XI"))
+        top_dism = int(top_cand.get("Keeper_Dismissals", int(top_cand.get("Catches_As_Keeper", 0)) + int(top_cand.get("Stumpings", 0))))
+        return {
+            "is_compliant": False,
+            "first_xi_keepers": [],
+            "top_candidate": top_name,
+            "top_candidate_tier": top_tier,
+            "top_candidate_dismissals": top_dism,
+            "status_message": f"⚠️ Advisory: No specialist wicket-keeper projected in 1st XI. Top candidate: {top_name} ({top_tier})."
+        }
+
+    return {
+        "is_compliant": False,
+        "first_xi_keepers": [],
+        "top_candidate": None,
+        "top_candidate_tier": None,
+        "top_candidate_dismissals": 0,
+        "status_message": "⚠️ Advisory: No recognized wicket-keeper found across club rosters."
+    }
+
+
+def build_club_projected_starring_workbook(
+    roster_df: pd.DataFrame,
+    club_name: str
+) -> openpyxl.Workbook:
+    """
+    Constructs a standard OpenPyXL workbook for a club's 2027 projected starring roster
+    containing two worksheets formatted according to GEMINI.md guidelines:
+    - Tab 1 ('2027 Projected Roster'): Complete waterfall allocation roster.
+    - Tab 2 ('At Risk & Relegated'): Filtered roster containing players flagged for relegation (🟠).
+
+    Inputs:
+        roster_df: Complete DataFrame output from allocate_waterfall_starring_roster.
+        club_name: Name of the NCU cricket club (e.g. 'Waringstown', 'Instonians').
+
+    Outputs:
+        openpyxl.Workbook: Formatted workbook with navy headers, white bold text, auto-fitted
+                           columns, and freeze panes at row A2.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    wb = openpyxl.Workbook()
+
+    export_cols = [
+        "Projected_Rank", "Player", "Role", "2027_Predicted_Tier", "Status",
+        "2026_Starred_Tier", "Primary_Team", "Projected_Rating",
+        "Runs", "Wickets", "Catches", "Stumpings", "Matches"
+    ]
+    valid_cols = [c for c in export_cols if c in roster_df.columns] if roster_df is not None and not roster_df.empty else export_cols
+
+    # Tab 1: 2027 Projected Roster
+    ws1 = wb.active
+    ws1.title = "2027 Projected Roster"
+    ws1.append(valid_cols)
+    if roster_df is not None and not roster_df.empty:
+        for _, row in roster_df[valid_cols].iterrows():
+            ws1.append([row[c] for c in valid_cols])
+    format_excel_worksheet_standard(ws1)
+
+    # Tab 2: At Risk & Relegated
+    ws2 = wb.create_sheet(title="At Risk & Relegated")
+    ws2.append(valid_cols)
+    if roster_df is not None and not roster_df.empty and "Status" in roster_df.columns:
+        rel_df = roster_df[roster_df["Status"].astype(str).str.contains("🟠", na=False)]
+        for _, row in rel_df[valid_cols].iterrows():
+            ws2.append([row[c] for c in valid_cols])
+    format_excel_worksheet_standard(ws2)
+
+    return wb
+
+
+# ==============================================================================
+# 2027 IN-SEASON ROSTER REALISM & PERFORMANCE MONITOR
+# ==============================================================================
+
+def detect_ghost_stars(
+    roster_df: pd.DataFrame,
+    international_exemptions: Optional[Set[str]] = None,
+    dispensations: Optional[Union[Set[str], Dict[str, str], pd.DataFrame, List[Any]]] = None,
+    early_season_weeks: int = 3
+) -> pd.DataFrame:
+    """
+    Evaluates early-season appearance and inactivity records for club starred rosters.
+    Identifies top-tier assets (1st XI and 2nd XI) with zero appearances or >= 3 weeks
+    (21 days) of inactivity who lack international duty exemptions or Board-Approved
+    Availability Dispensations, flagging potential roster padding or ghost stars.
+
+    Inputs:
+        roster_df: DataFrame containing player roster data with columns such as
+                   'Player', 'Club', 'Current Starred Tier' (or '2027_Predicted_Tier' / '2026_Starred_Tier'),
+                   'Matches' (or 'Total_Matches'), 'Days Inactive', 'Is_International'.
+        international_exemptions: Optional set of player names possessing active international duty exemptions.
+        dispensations: Optional set, dict, or DataFrame of board-approved availability dispensations.
+        early_season_weeks: Inactivity threshold in weeks (default 3 weeks / 21 days).
+
+    Outputs:
+        pd.DataFrame: Audit table of flagged ghost star players with columns:
+                      ['Rank', 'Player', 'Club', 'Current Starred Tier', 'Matches', 'Days Inactive', 'Alert', 'Details'].
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_roster_realism.py.
+    """
+    if roster_df is None or roster_df.empty:
+        return pd.DataFrame(columns=[
+            "Rank", "Player", "Club", "Current Starred Tier", "Matches", "Days Inactive", "Alert", "Details"
+        ])
+
+    intl_set = set(str(p).strip().lower() for p in (international_exemptions or set()))
+    threshold_days = early_season_weeks * 7
+
+    disp_set: Set[str] = set()
+    if dispensations is not None:
+        if isinstance(dispensations, pd.DataFrame):
+            p_col = next((c for c in ["Player Name", "Player", "Full Name", "Name"] if c in dispensations.columns), None)
+            if p_col:
+                disp_set = set(dispensations[p_col].dropna().astype(str).str.strip().str.lower())
+        elif isinstance(dispensations, dict):
+            disp_set = set(str(k).strip().lower() for k in dispensations.keys())
+        elif isinstance(dispensations, (list, set)):
+            for item in dispensations:
+                if isinstance(item, dict):
+                    pn = str(item.get("Player Name", item.get("Player", ""))).strip().lower()
+                    if pn: disp_set.add(pn)
+                else:
+                    disp_set.add(str(item).strip().lower())
+
+    flagged_rows: List[Dict[str, Any]] = []
+
+    for idx, row in roster_df.iterrows():
+        p_name = str(row.get("Player", row.get("Full Name", row.get("Name", "")))).strip()
+        if not p_name:
+            continue
+
+        club_name = str(row.get("Club", row.get("Club Name", ""))).strip()
+
+        # Resolve tier
+        tier = ""
+        for c in ["Current Starred Tier", "2027_Predicted_Tier", "2026_Starred_Tier", "Starred Tier", "XI_Level", "Team", "Tier"]:
+            if c in row and pd.notna(row[c]):
+                tier = str(row[c]).strip()
+                break
+
+        t_lower = tier.lower()
+        # Only evaluate 1st XI and 2nd XI starred assets
+        is_top_tier = ("1st" in t_lower) or ("2nd" in t_lower)
+        if not is_top_tier:
+            continue
+
+        # Check International Duty Exemption
+        is_intl = bool(row.get("Is_International", False) or row.get("is_international", False))
+        if is_intl or (p_name.lower() in intl_set):
+            continue
+
+        # Check Board-Approved Availability Dispensation
+        disp_val = str(row.get("Availability_Dispensation", "")).strip()
+        has_disp = (
+            (bool(disp_val) and disp_val.lower() not in ["none", "nan", "", "false"])
+            or ("dispensation" in str(row.get("Status", "")).lower())
+            or (p_name.lower() in disp_set)
+        )
+        if has_disp:
+            continue
+
+        # Matches count
+        matches = 0
+        for m_col in ["Matches", "Total_Matches", "Appearances", "Eligible Appearances"]:
+            if m_col in row and pd.notna(row[m_col]):
+                try:
+                    matches = int(row[m_col])
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        # Days inactive
+        days_inactive = 0
+        for d_col in ["Days Inactive", "days_inactive"]:
+            if d_col in row and pd.notna(row[d_col]):
+                try:
+                    days_inactive = int(row[d_col])
+                    break
+                except (ValueError, TypeError):
+                    pass
+
+        is_ghost = False
+        reasons = []
+
+        if matches == 0:
+            is_ghost = True
+            reasons.append("0 matches recorded in early season")
+        elif days_inactive >= threshold_days:
+            is_ghost = True
+            reasons.append(f"Inactive for {days_inactive} days (>= {threshold_days} days / {early_season_weeks} wks)")
+
+        if is_ghost:
+            flagged_rows.append({
+                "Rank": len(flagged_rows) + 1,
+                "Player": p_name,
+                "Club": club_name,
+                "Current Starred Tier": tier,
+                "Matches": matches,
+                "Days Inactive": days_inactive,
+                "Alert": "⚠️ Potential Ghost Star (Roster Padding)",
+                "Details": "; ".join(reasons)
+            })
+
+    if not flagged_rows:
+        return pd.DataFrame(columns=[
+            "Rank", "Player", "Club", "Current Starred Tier", "Matches", "Days Inactive", "Alert", "Details"
+        ])
+    return pd.DataFrame(flagged_rows)
+
+
+def compute_promotion_cascade_path(
+    current_tier: str,
+    team_count: int,
+    domain: str = "Men's",
+    is_elite: bool = False
+) -> Tuple[str, str]:
+    """
+    Computes the recommended upward promotion tier and cascade displacement path
+    for lower-tier players over-performing their registered level, aligned with Rule A10/WA10.
+
+    Inputs:
+        current_tier: Player's current team level (e.g. '3rd XI', '4th XI', '5th XI', 'Unstarred').
+        team_count: Total senior teams fielded by the club (2 to 6).
+        domain: Competition domain ("Men's" or "Women's").
+        is_elite: Whether the player's metrics warrant fast-tracking directly to 1st XI.
+
+    Outputs:
+        Tuple[str, str]: (recommended_tier, cascade_description).
+
+    Helper Apps:
+        app.py, starring_rules.py, tests/test_roster_realism.py.
+    """
+    t_clean = str(current_tier).strip()
+    t_low = t_clean.lower()
+
+    if is_elite:
+        return "1st XI", "Fast-Track Promotion to 1st XI (Displaces lowest 1st XI slot to 2nd XI)"
+
+    if "3rd" in t_low:
+        return "2nd XI", "Advance to 2nd XI (Displaces lowest 2nd XI slot to 3rd XI)"
+    elif "4th" in t_low:
+        return "3rd XI", "Advance to 3rd XI (Displaces lowest 3rd XI slot to 4th XI)"
+    elif "5th" in t_low:
+        return "4th XI", "Advance to 4th XI (Displaces lowest 4th XI slot to 5th XI)"
+    elif "6th" in t_low:
+        return "5th XI", "Advance to 5th XI (Displaces lowest 5th XI slot to 6th XI)"
+    else:
+        # Unstarred or Midweek
+        if team_count <= 2:
+            return "2nd XI", "Advance to 2nd XI (Displaces lowest 2nd XI slot to Unstarred)"
+        elif team_count == 3:
+            return "3rd XI", "Advance to 3rd XI (Displaces lowest 3rd XI slot to Unstarred)"
+        else:
+            return "4th XI", "Advance to 4th XI (Displaces lowest 4th XI slot to Unstarred)"
+
+
+def evaluate_lower_tier_overperformance(
+    player_perf_df: pd.DataFrame,
+    team_count: int = 3,
+    domain: str = "Men's",
+    dispensations: Optional[Union[Set[str], Dict[str, str], pd.DataFrame, List[Any]]] = None
+) -> pd.DataFrame:
+    """
+    Monitors player scorecards specifically for unstarred or lower-tier players (3rd XI and lower)
+    to detect statistical ceiling breaches within their first 3 appearances:
+    - Batting: Runs > 150 OR Strike Rate > 130% OR Average > 55.0 (Minimum 3 innings).
+    - Bowling: Wickets > 10 OR Economy < 3.50 OR Average < 12.0 (Minimum 15 overs).
+    Labels breached records and computes an automated upward promotion cascade path.
+    Board-Approved Availability Dispensations are exempt from over-performance alerts.
+
+    Inputs:
+        player_perf_df: DataFrame with player performance aggregates or match breakdowns.
+        team_count: Club senior teams count for Rule A10/WA10 quota modeling.
+        domain: Competition domain ("Men's" or "Women's").
+        dispensations: Optional set, dict, or DataFrame of board-approved availability dispensations.
+
+    Outputs:
+        pd.DataFrame: Table of flagged lower-tier over-performers with recommended promotion paths.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_roster_realism.py.
+    """
+    if player_perf_df is None or player_perf_df.empty:
+        return pd.DataFrame(columns=[
+            "Rank", "Player", "Club", "Current Tier", "Recommended Tier",
+            "Alert", "Breach Reasons", "Promotion Path",
+            "Runs", "Bat Avg", "SR", "Wickets", "Bowl Avg", "Econ"
+        ])
+
+    disp_set: Set[str] = set()
+    if dispensations is not None:
+        if isinstance(dispensations, pd.DataFrame):
+            p_col = next((c for c in ["Player Name", "Player", "Full Name", "Name"] if c in dispensations.columns), None)
+            if p_col:
+                disp_set = set(dispensations[p_col].dropna().astype(str).str.strip().str.lower())
+        elif isinstance(dispensations, dict):
+            disp_set = set(str(k).strip().lower() for k in dispensations.keys())
+        elif isinstance(dispensations, (list, set)):
+            for item in dispensations:
+                if isinstance(item, dict):
+                    pn = str(item.get("Player Name", item.get("Player", ""))).strip().lower()
+                    if pn: disp_set.add(pn)
+                else:
+                    disp_set.add(str(item).strip().lower())
+
+    def parse_overs_to_decimal(ov_val: Any) -> float:
+        try:
+            val = float(ov_val)
+            ov_int = int(val)
+            balls = round((val - ov_int) * 10)
+            if balls >= 6:
+                ov_int += balls // 6
+                balls = balls % 6
+            return float(ov_int) + (balls / 6.0)
+        except (ValueError, TypeError):
+            return 0.0
+
+    flagged: List[Dict[str, Any]] = []
+
+    for _, row in player_perf_df.iterrows():
+        p_name = str(row.get("Player", row.get("Full Name", row.get("Name", "")))).strip()
+        if not p_name:
+            continue
+
+        club_name = str(row.get("Club", row.get("Club Name", ""))).strip()
+
+        # Check Board-Approved Availability Dispensation
+        disp_val = str(row.get("Availability_Dispensation", "")).strip()
+        has_disp = (
+            (bool(disp_val) and disp_val.lower() not in ["none", "nan", "", "false"])
+            or ("dispensation" in str(row.get("Status", "")).lower())
+            or (p_name.lower() in disp_set)
+        )
+        if has_disp:
+            continue
+
+        # Determine current tier
+        curr_tier = ""
+        for c in ["Primary_Team", "Current Tier", "Current Starred Tier", "2026_Starred_Tier", "Starred Tier", "XI_Level"]:
+            if c in row and pd.notna(row[c]):
+                curr_tier = str(row[c]).strip()
+                break
+        if not curr_tier:
+            curr_tier = "Unstarred"
+
+        t_low = curr_tier.lower()
+        # Only evaluate lower-tier or unstarred players (exclude 1st XI and 2nd XI)
+        if ("1st" in t_low) or ("2nd" in t_low):
+            continue
+
+        # Extract stats from Match_Performances (first 3 lower-tier appearances) or row metrics
+        matches = row.get("Match_Performances", [])
+        lower_matches = [
+            m for m in matches
+            if any(lt in str(m.get("Tier", "")).lower() for lt in ["3rd", "4th", "5th", "6th", "midweek"])
+        ] if isinstance(matches, list) and matches else []
+
+        if lower_matches:
+            # First 3 lower-tier appearances
+            eval_matches = lower_matches[:3]
+            runs = sum(int(m.get("Runs", 0)) for m in eval_matches)
+            inns = sum(1 for m in eval_matches if m.get("Runs") is not None and str(m.get("Runs", "")).strip().upper() != "DNB")
+            not_outs = sum(1 for m in eval_matches if m.get("Not_Out", False))
+            balls_faced = sum(int(m.get("Balls", 0)) for m in eval_matches)
+            sr_val = ((runs / balls_faced) * 100.0) if balls_faced > 0 else float(row.get("Strike_Rate", row.get("SR", 0.0)))
+
+            wkts = sum(int(m.get("Wickets", 0)) for m in eval_matches)
+            runs_conc = sum(int(m.get("Runs_Conceded", 0)) for m in eval_matches)
+            overs_dec = sum(parse_overs_to_decimal(m.get("Overs", 0.0)) for m in eval_matches)
+        else:
+            runs = int(row.get("Runs", 0))
+            inns = int(row.get("Innings_Bat", row.get("Innings", row.get("Inns", 3 if runs > 0 else 0))))
+            not_outs = int(row.get("Not_Outs", row.get("NO", 0)))
+            sr_val = float(row.get("Strike_Rate", row.get("SR", 0.0)))
+            balls_faced = int(row.get("Balls", 0))
+            if sr_val == 0.0 and balls_faced > 0:
+                sr_val = (runs / balls_faced) * 100.0
+
+            wkts = int(row.get("Wickets", 0))
+            runs_conc = int(row.get("Runs_Conceded", 0))
+            overs_raw = row.get("Overs", 0.0)
+            overs_dec = parse_overs_to_decimal(overs_raw)
+
+        # Batting metrics (requires min 3 innings)
+        bat_breaches = []
+        dismissals = max(0, inns - not_outs)
+        bat_avg = (runs / dismissals) if dismissals > 0 else float(runs)
+
+        if inns >= 3:
+            if runs > 150:
+                bat_breaches.append(f"Runs: {runs} (> 150)")
+            if sr_val > 130.0:
+                bat_breaches.append(f"SR: {sr_val:.1f}% (> 130%)")
+            if bat_avg > 55.0:
+                bat_breaches.append(f"Avg: {bat_avg:.1f} (> 55.0)")
+
+        # Bowling metrics (requires min 15 overs)
+        bowl_breaches = []
+        econ = (runs_conc / overs_dec) if overs_dec > 0 else 999.0
+        bowl_avg = (runs_conc / wkts) if wkts > 0 else 999.0
+
+        if overs_dec >= 15.0:
+            if wkts > 10:
+                bowl_breaches.append(f"Wickets: {wkts} (> 10)")
+            if econ < 3.50:
+                bowl_breaches.append(f"Economy: {econ:.2f} (< 3.50)")
+            if bowl_avg < 12.0 and wkts > 0:
+                bowl_breaches.append(f"Avg: {bowl_avg:.1f} (< 12.0)")
+
+        total_breaches = bat_breaches + bowl_breaches
+        if total_breaches:
+            is_elite = (runs >= 250) or (wkts >= 15)
+            rec_tier, cascade_path = compute_promotion_cascade_path(curr_tier, team_count, domain, is_elite=is_elite)
+
+            flagged.append({
+                "Rank": len(flagged) + 1,
+                "Player": p_name,
+                "Club": club_name,
+                "Current Tier": curr_tier,
+                "Recommended Tier": rec_tier,
+                "Alert": "🔥 Lower-Tier Over-Performer (Review Required)",
+                "Breach Reasons": "; ".join(total_breaches),
+                "Promotion Path": cascade_path,
+                "Runs": runs,
+                "Bat Avg": round(bat_avg, 1) if inns > 0 else 0.0,
+                "SR": round(sr_val, 1) if sr_val > 0 else 0.0,
+                "Wickets": wkts,
+                "Bowl Avg": round(bowl_avg, 1) if wkts > 0 else 0.0,
+                "Econ": round(econ, 2) if overs_dec > 0 else 0.0
+            })
+
+    if not flagged:
+        return pd.DataFrame(columns=[
+            "Rank", "Player", "Club", "Current Tier", "Recommended Tier",
+            "Alert", "Breach Reasons", "Promotion Path",
+            "Runs", "Bat Avg", "SR", "Wickets", "Bowl Avg", "Econ"
+        ])
+
+    df_res = pd.DataFrame(flagged)
+    if not df_res.empty:
+        df_res = df_res.sort_values(by=["Runs", "Wickets"], ascending=[False, False]).reset_index(drop=True)
+        df_res["Rank"] = range(1, len(df_res) + 1)
+    return df_res
+
+
+# ==============================================================================
+# SEASONAL ARCHIVING & MULTI-YEAR INGESTION ENGINE (RULE INTEGRATION)
+# ==============================================================================
+
+def ensure_archive_directory(project_root: Optional[str] = None) -> str:
+    """
+    Validates that an archive/ folder exists within the project root, creating it if needed.
+
+    Inputs:
+        project_root: Optional root directory path (defaults to current working directory).
+
+    Outputs:
+        str: Absolute path to the validated archive/ directory.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    import engine as eng
+    return eng.ensure_archive_directory(project_root=project_root)
+
+
+def extract_season_from_path(file_path: str, default_season: int = 2026) -> int:
+    """
+    Extracts a 4-digit season year from a file path or filename string.
+
+    Inputs:
+        file_path: File system path or filename.
+        default_season: Fallback year if no valid 4-digit year is found (default 2026).
+
+    Outputs:
+        int: Extracted season year integer.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    import engine as eng
+    return eng.extract_season_from_path(file_path=file_path, default_season=default_season)
+
+
+def archive_completed_season(target_year: int = 2026, project_root: Optional[str] = None) -> List[str]:
+    """
+    Safely archives active season raw data sheets for Saturday/Open, Women's, and Midweek cricket
+    into the archive/ directory stamped with the year suffix (e.g., Open_Season_2026.xlsx).
+
+    Inputs:
+        target_year: Season year to stamp onto archived files (default 2026).
+        project_root: Optional project root folder (defaults to current working directory).
+
+    Outputs:
+        List[str]: Paths of the newly created archive files.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    import engine as eng
+    return eng.archive_completed_season(target_year=target_year, project_root=project_root)
+
+
+def generate_clean_season_templates(
+    target_year: int = 2027,
+    project_root: Optional[str] = None,
+    files_to_clean: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Overwrites the active season scorecard and structure files with blank rows,
+    preserving only the formal structural columns, validation strings, and default
+    #1F4E78 dark navy header styles (GEMINI.md protocol).
+
+    Inputs:
+        target_year: Upcoming season to initialize (default 2027).
+        project_root: Optional project root folder.
+        files_to_clean: Optional list of file paths to wipe/initialize.
+
+    Outputs:
+        List[str]: Paths of the newly generated clean season templates.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    import engine as eng
+    return eng.generate_clean_season_templates(
+        target_year=target_year,
+        project_root=project_root,
+        files_to_clean=files_to_clean
+    )
+
+
+def load_multi_season_scorecard_frames(
+    domain: str = "Men's",
+    stat_type: str = "bat",
+    primary_file: Optional[str] = None,
+    include_irish: bool = True,
+    include_midweek: bool = False,
+    include_archive: bool = True,
+    project_root: Optional[str] = None,
+    custom_files: Optional[Dict[str, str]] = None
+) -> List[pd.DataFrame]:
+    """
+    Dynamically searches pattern arrays across active root files and any .xlsx files in archive/,
+    returning a combined list of DataFrames tagged with an explicit 'Season' metadata column.
+
+    Inputs:
+        domain: Competition domain ("Men's", "Women's", or "Midweek").
+        stat_type: Stat file category ("bat" or "bowl").
+        primary_file: Optional path to an active scorecard file.
+        include_irish: Whether to include Irish Cup / National Cup scorecards (Men's).
+        include_midweek: Whether to include Midweek League scorecards.
+        include_archive: Whether to scan and load historical files from the archive/ folder.
+        project_root: Optional project root folder (defaults to current working directory).
+        custom_files: Optional overrides mapping file keys.
+
+    Outputs:
+        List[pd.DataFrame]: Loaded dataframes each enriched with an explicit 'Season' column.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    import engine as eng
+    return eng.load_multi_season_scorecard_frames(
+        domain=domain,
+        stat_type=stat_type,
+        primary_file=primary_file,
+        include_irish=include_irish,
+        include_midweek=include_midweek,
+        include_archive=include_archive,
+        project_root=project_root,
+        custom_files=custom_files
+    )

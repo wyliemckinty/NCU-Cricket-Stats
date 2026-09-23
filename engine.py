@@ -20,7 +20,7 @@ from openpyxl.utils import get_column_letter
 from collections import Counter, defaultdict
 from collections.abc import Mapping
 import copy
-from typing import Any, Union, Dict, Tuple, Optional, List, Set
+from typing import Any, Union, Dict, Tuple, Optional, List, Set, Callable
 
 
 warnings.filterwarnings('ignore')
@@ -199,8 +199,15 @@ def _get_club_regex(variant_str):
         _COMPILED_CLUB_REGEX[v] = reg
     return reg
 
-_ORIGINAL_READ_EXCEL = pd.read_excel
-_ORIGINAL_PATH_EXISTS = os.path.exists
+if '_ORIGINAL_READ_EXCEL' not in globals() or not callable(globals().get('_ORIGINAL_READ_EXCEL')):
+    _ORIGINAL_READ_EXCEL = pd.read_excel
+elif not (hasattr(pd.read_excel, 'mock') or hasattr(pd.read_excel, 'side_effect')):
+    _ORIGINAL_READ_EXCEL = pd.read_excel
+
+if '_ORIGINAL_PATH_EXISTS' not in globals() or not callable(globals().get('_ORIGINAL_PATH_EXISTS')):
+    _ORIGINAL_PATH_EXISTS = os.path.exists
+elif not (hasattr(os.path.exists, 'mock') or hasattr(os.path.exists, 'side_effect')):
+    _ORIGINAL_PATH_EXISTS = os.path.exists
 
 class _LazyDuplicateDict(dict):
     """
@@ -1191,7 +1198,7 @@ def club_matches_team_base(club_base: Any, team_str: Any) -> bool:
         return False
     c_base = extract_base_club_name(club_base).strip().lower()
     t_base = extract_base_club_name(team_str).strip().lower()
-    if not c_base or not t_base or c_base == 'unknown club' or t_base == 'unknown club':
+    if not c_base or not t_base or c_base.startswith('unknown') or t_base.startswith('unknown'):
         return False
     if c_base == t_base:
         return True
@@ -1335,7 +1342,7 @@ def _init_known_duplicates(force_refresh=False):
     building an optimized dictionary lookup and caching it in memory.
     """
     global PLAYER_CACHE, KNOWN_DUPLICATES
-    if PLAYER_CACHE is not None and not force_refresh:
+    if PLAYER_CACHE is not None and not force_refresh and len(PLAYER_CACHE) > 0:
         return PLAYER_CACHE
 
     base_dir = os.path.dirname(os.path.abspath(__file__)) if '__file__' in globals() else os.getcwd()
@@ -1370,6 +1377,7 @@ def _init_known_duplicates(force_refresh=False):
         
     PLAYER_CACHE = build_dynamic_duplicate_map(id_map_df=id_df, reg_players_df=reg_df)
     if isinstance(KNOWN_DUPLICATES, dict):
+        KNOWN_DUPLICATES.clear()
         KNOWN_DUPLICATES.update(PLAYER_CACHE)
     return PLAYER_CACHE
 
@@ -1546,6 +1554,38 @@ def _get_id_map_index(id_map):
     _ID_MAP_INDEX_CACHE[map_id] = (len(id_map), name_idx, all_names)
     return name_idx, all_names
 
+
+def strip_club_suffix(name: Optional[str], club_name: Optional[str] = None) -> str:
+    """
+    Strips trailing parenthetical club, team, or status annotations from a player's name
+    for single-club rosters, dropdown selectors, inspector controls, audit tables, and exports.
+    E.g. 'Robert Hall (Laurelvale)' -> 'Robert Hall'
+         'Harry Jackson (Ards & Donaghadee)' -> 'Harry Jackson'
+         'John Weir (Derriaghy)' -> 'John Weir'
+         'Yuvaraj Vijayakumar (Unverified/Requires Manual Check)' -> 'Yuvaraj Vijayakumar'
+
+    Inputs:
+        name: Player name string potentially containing parenthetical suffixes.
+        club_name: Optional target club context.
+
+    Outputs:
+        str: Clean player name string.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_engine.py.
+    """
+    if not name or not isinstance(name, str):
+        return "" if name is None else str(name).strip()
+    raw = name.strip()
+    while True:
+        m = re.search(r"\s*\(([^)]+)\)\s*$", raw)
+        if m:
+            raw = raw[:m.start()].strip()
+        else:
+            break
+    return raw
+
+
 def resolve_player_from_row(
     row: pd.Series,
     raw_name: Any,
@@ -1613,11 +1653,16 @@ def resolve_player_from_row(
         raw_name_clean = clean_name_basic(clean_input_name)
         norm_input = normalize_cache_key(clean_input_name)
         group_context = str(row.get('Group', row.get('Match', ''))).lower()
-        team_context = str(row.get('Team', '')).lower()
+        team_context = str(row.get('Team', row.get('Club', ''))).lower()
         comb_context = clean_club_for_matching(team_context + " " + group_context)
         
         # Fast-Path Exact Matches: check normalized player name against pre-computed cache
         candidates = name_idx.get(raw_name_clean) or name_idx.get(norm_input)
+        mapped_input = alias_map.get(raw_name_clean) or alias_map.get(norm_input) if alias_map else None
+        if not candidates and mapped_input:
+            clean_mapped = clean_name_basic(mapped_input)
+            norm_mapped = normalize_cache_key(mapped_input)
+            candidates = name_idx.get(clean_mapped) or name_idx.get(norm_mapped)
         
         # Only fallback to heavy thefuzz.process.extractOne() if exact match is missing
         if not candidates and all_names:
@@ -1633,6 +1678,16 @@ def resolve_player_from_row(
                 if clean_club and (clean_club in comb_context or any(v in comb_context for v in clean_variants)):
                     matched_candidates.append(info)
                     
+            if len(matched_candidates) > 1:
+                unique_matched = []
+                seen_keys = set()
+                for m in matched_candidates:
+                    key = (m.get('sport80_id') or m.get('nv_play_name', '')).strip().lower()
+                    if key not in seen_keys:
+                        seen_keys.add(key)
+                        unique_matched.append(m)
+                matched_candidates = unique_matched
+
             if len(matched_candidates) == 1:
                 info = matched_candidates[0]
                 sport80_id = info.get('sport80_id', '')
@@ -1663,7 +1718,8 @@ def resolve_player_from_row(
                 return unverified_name, None, None, False
         
     if prefer_nv_play_name:
-        fallback_name = fix_celtic_casing(clean_input_name)
+        mapped_alias = alias_map.get(clean_input_name.lower()) if alias_map else None
+        fallback_name = fix_celtic_casing(mapped_alias if mapped_alias else clean_input_name)
     else:
         fallback_name = fix_celtic_casing(cleanse_name_contextual(clean_input_name, row, alias_map, player_club_map))
     return fallback_name, None, None, False
@@ -1679,11 +1735,15 @@ def build_secondary_team_map(secondary_df, alias_map):
                 p_team = str(r[col_team]).strip()
                 if p_name and p_name.lower() != 'nan':
                     mapped_name = alias_map.get(p_name.lower(), p_name) if alias_map else p_name
-                    for key in [p_name, p_name.lower(), mapped_name, mapped_name.lower()]:
-                        if key not in sec_map:
-                            sec_map[key] = []
-                        if p_team not in sec_map[key]:
-                            sec_map[key].append(p_team)
+                    base_name = re.sub(r'\s*\([^)]*\)', '', p_name).strip()
+                    mapped_base = alias_map.get(base_name.lower(), base_name) if alias_map else base_name
+                    keys = {p_name, p_name.lower(), mapped_name, mapped_name.lower(), base_name, base_name.lower(), mapped_base, mapped_base.lower()}
+                    for key in keys:
+                        if key:
+                            if key not in sec_map:
+                                sec_map[key] = []
+                            if p_team not in sec_map[key]:
+                                sec_map[key].append(p_team)
     return sec_map
     
 def get_alias_used_for_player(official_name, search_input, alias_map):
@@ -1831,10 +1891,16 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
                         norm_lower = norm_name.lower()
                         mapped_name = alias_map.get(norm_lower, norm_name)
                         mapped_lower = str(mapped_name).strip().lower()
-                        club_map[mapped_lower] = reg_club
-                        club_map[mapped_name] = reg_club
-                        club_map[norm_lower] = reg_club
-                        club_map[norm_name] = reg_club
+                        for key in [mapped_lower, mapped_name, norm_lower, norm_name]:
+                            existing = club_map.get(key, "")
+                            if not existing:
+                                club_map[key] = reg_club
+                            else:
+                                existing_chunks = [extract_base_club_name(x).lower() for x in existing.split('/')]
+                                for cf in clubs_found:
+                                    if extract_base_club_name(cf).lower() not in existing_chunks:
+                                        existing = f"{existing} / {cf}"
+                                club_map[key] = existing
 
     if unreg_map_df is not None and not unreg_map_df.empty:
         col_name = unreg_map_df.columns[0]
@@ -1930,8 +1996,6 @@ def build_player_club_map(reg_players, alias_map, domain, unreg_map_df=None, sec
                         existing = club_map.get(k, "")
                         if not existing:
                             club_map[k] = club_raw
-                        elif club_raw.lower() not in existing.lower():
-                            club_map[k] = f"{existing} / {club_raw}"
                         
     return club_map
 
@@ -2223,6 +2287,97 @@ def extract_teams_from_group(group_str):
             return t1.strip(), t2.strip()
         return rest, "Unknown"
     except: return "Unknown", "Unknown"
+
+def determine_opposition_team(group_str: Any, player_team: Any = "", club_name: Any = "") -> str:
+    """
+    Extracts the opposition team name from a match group string.
+
+    Inputs:
+        group_str (Any): Match description string from Group (e.g. 'Armagh 1st XI v Laurelvale 1st XI, 12th May 2026 - Premier League').
+        player_team (Any): The team the player represented (e.g. 'Armagh 1st XI').
+        club_name (Any): The player's home club (e.g. 'Armagh').
+
+    Returns:
+        str: Opposition team name (e.g. 'Laurelvale 1st XI') or '—'.
+
+    Helper Apps:
+        engine.py, app.py
+    """
+    if not group_str or pd.isna(group_str):
+        return "—"
+    t1, t2 = extract_teams_from_group(str(group_str))
+    if not t1 or t1 == "Unknown" or not t2 or t2 == "Unknown":
+        return "—"
+
+    # Match against player's team
+    if player_team:
+        p_team_clean = str(player_team).strip().lower()
+        if t1.strip().lower() == p_team_clean and t2.strip().lower() != p_team_clean:
+            return t2.strip()
+        if t2.strip().lower() == p_team_clean and t1.strip().lower() != p_team_clean:
+            return t1.strip()
+
+    # Match against base club name
+    clean_club = str(club_name).strip() if club_name else ""
+    m1 = club_matches_team_base(clean_club, t1) if clean_club else False
+    m2 = club_matches_team_base(clean_club, t2) if clean_club else False
+    if m1 and not m2:
+        return t2.strip()
+    elif m2 and not m1:
+        return t1.strip()
+    elif m1 and m2:
+        # Intra-club match (e.g. Armagh 2nd XI v Armagh 3rd XI)
+        if player_team and str(player_team).strip().lower() in t1.strip().lower():
+            return t2.strip()
+        return t1.strip()
+
+    # Fallback substring heuristic
+    if player_team and str(player_team).strip().lower() in t1.strip().lower():
+        return t2.strip()
+    return t1.strip()
+
+def extract_match_date(group_str: Any) -> Optional[Any]:
+    """
+    Extracts the calendar date of a match from a scorecard group string.
+
+    Inputs:
+        group_str (Any): Scorecard match description (e.g. 'CSNI 5th XI v BISC 5th XI, TBC - 25 April 2026').
+
+    Returns:
+        Optional[datetime.date]: Parsed date object if found, else None.
+
+    Helper Apps:
+        engine.py, app.py
+    """
+    if not group_str or pd.isna(group_str):
+        return None
+    month_lookup = {
+        'jan': 1, 'january': 1,
+        'feb': 2, 'february': 2,
+        'mar': 3, 'march': 3,
+        'apr': 4, 'april': 4,
+        'may': 5,
+        'jun': 6, 'june': 6,
+        'jul': 7, 'july': 7,
+        'aug': 8, 'august': 8,
+        'sep': 9, 'september': 9, 'sept': 9,
+        'oct': 10, 'october': 10,
+        'nov': 11, 'november': 11,
+        'dec': 12, 'december': 12
+    }
+    months_pat = r'(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)'
+    pattern = rf'\b(\d{{1,2}})(?:st|nd|rd|th)?\s+({months_pat})(?:\s+(\d{{4}}))?\b'
+    match = re.search(pattern, str(group_str), re.IGNORECASE)
+    if match:
+        day, month_name = int(match.group(1)), match.group(2).lower()
+        year = int(match.group(3)) if match.group(3) else 2026
+        if month_name in month_lookup:
+            try:
+                import datetime as dt_mod
+                return dt_mod.date(year, month_lookup[month_name], day)
+            except Exception:
+                pass
+    return None
 
 def determine_player_team_for_row(row, player_club_map, domain, secondary_map=None, player_fixture_clubs=None, alias_map=None, intra_team_map=None):
     player = str(row.get('Cleaned Name', row.get('Player', row.get('Name', row.get('Bowler', ''))))).strip()
@@ -2597,8 +2752,8 @@ def get_cup_and_t20_match_sets(
 
 def classify_match_type(
     grp_str: str,
-    cup_match_set: Set[Tuple[str, str, str]],
-    t20_match_set: Set[Tuple[str, str, str]],
+    cup_match_set: Optional[Set[Tuple[str, str, str]]] = None,
+    t20_match_set: Optional[Set[Tuple[str, str, str]]] = None,
     domain: str = "Men's"
 ) -> str:
     """
@@ -2606,8 +2761,8 @@ def classify_match_type(
 
     Inputs:
         grp_str: Scorecard match string from the Group column.
-        cup_match_set: Set of (team1, team2, date) tuples representing cup matches.
-        t20_match_set: Set of (team1, team2, date) tuples representing T20 cup matches.
+        cup_match_set: Optional set of (team1, team2, date) tuples representing cup matches.
+        t20_match_set: Optional set of (team1, team2, date) tuples representing T20 cup matches.
         domain: Competition domain ("Men's", "Women's", or "Midweek").
 
     Outputs:
@@ -2616,7 +2771,7 @@ def classify_match_type(
     Helper Apps:
         engine.py, stats_app.py.
     """
-    if domain == "Midweek":
+    if domain == "Midweek" or "midweek" in str(grp_str).lower():
         return "Midweek League"
 
     grp_lower = str(grp_str).lower()
@@ -2653,7 +2808,7 @@ def classify_match_type(
         return 'Cup'
 
     # 5. Check date-strict match against Cup Fixtures Master
-    if ' v ' in grp_str:
+    if ' v ' in grp_str and (cup_match_set or t20_match_set):
         parts = str(grp_str).rsplit(' - ', 1)
         rest = parts[0].strip()
         d_str = parts[1].strip() if len(parts) == 2 else ""
@@ -2667,9 +2822,9 @@ def classify_match_type(
             teams = sorted([t_a.strip().lower(), t_b.strip().lower()])
             key = (teams[0], teams[1], date_key)
 
-            if key in t20_match_set:
+            if t20_match_set is not None and key in t20_match_set:
                 return 'T20'
-            if key in cup_match_set:
+            if cup_match_set is not None and key in cup_match_set:
                 return 'Cup'
 
     # 6. Fallback checks only if NOT an explicit league fixture
@@ -4256,21 +4411,41 @@ def run_registration_audit(
     registered_players = get_excel_df(f_reg).copy()
     aliases = get_excel_df(f_alias)
     league_structure = get_excel_df(f_league)
-    batting_stats = get_excel_df(f_bat).copy()
-    bowling_stats = get_excel_df(f_bowl).copy()
+    bat_frames = load_multi_season_scorecard_frames(
+        domain=domain,
+        stat_type="bat",
+        primary_file=f_bat,
+        include_irish=(domain == "Men's" and bool(f_irish_bat)),
+        include_archive=True
+    )
+    bowl_frames = load_multi_season_scorecard_frames(
+        domain=domain,
+        stat_type="bowl",
+        primary_file=f_bowl,
+        include_irish=(domain == "Men's" and bool(f_irish_bowl)),
+        include_archive=True
+    )
 
-    batting_stats['Is_Irish_Match'] = False
-    bowling_stats['Is_Irish_Match'] = False
-    
-    if f_irish_bat and os.path.exists(f_irish_bat):
-        irish_bat = get_excel_df(f_irish_bat).copy()
-        irish_bat['Is_Irish_Match'] = True
-        batting_stats = pd.concat([batting_stats, irish_bat], ignore_index=True)
-        
-    if f_irish_bowl and os.path.exists(f_irish_bowl):
-        irish_bowl = get_excel_df(f_irish_bowl).copy()
-        irish_bowl['Is_Irish_Match'] = True
-        bowling_stats = pd.concat([bowling_stats, irish_bowl], ignore_index=True)
+    batting_stats = pd.concat(bat_frames, ignore_index=True) if bat_frames else pd.DataFrame()
+    bowling_stats = pd.concat(bowl_frames, ignore_index=True) if bowl_frames else pd.DataFrame()
+
+    if not batting_stats.empty:
+        dedup_bat_cols = [c for c in ['Group', 'Name', 'Season'] if c in batting_stats.columns]
+        if len(dedup_bat_cols) >= 2:
+            batting_stats = batting_stats.drop_duplicates(subset=dedup_bat_cols).reset_index(drop=True)
+        if 'Is_Irish_Match' not in batting_stats.columns:
+            batting_stats['Is_Irish_Match'] = False
+    else:
+        batting_stats = pd.DataFrame(columns=['Group', 'Name', 'Is_Irish_Match'])
+
+    if not bowling_stats.empty:
+        dedup_bowl_cols = [c for c in ['Group', 'Bowler', 'Season'] if c in bowling_stats.columns]
+        if len(dedup_bowl_cols) >= 2:
+            bowling_stats = bowling_stats.drop_duplicates(subset=dedup_bowl_cols).reset_index(drop=True)
+        if 'Is_Irish_Match' not in bowling_stats.columns:
+            bowling_stats['Is_Irish_Match'] = False
+    else:
+        bowling_stats = pd.DataFrame(columns=['Group', 'Bowler', 'Is_Irish_Match'])
 
     def parse_match_group(group_str):
         try:
@@ -4383,27 +4558,47 @@ def run_registration_audit(
         c_name, s80_id, _, _ = resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)
         return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
 
-    bat_resolved = batting_stats.apply(process_bat_row, axis=1)
-    batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
-    batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+    if not batting_stats.empty:
+        bat_resolved = batting_stats.apply(process_bat_row, axis=1)
+        batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
+        batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+        batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
+        batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
+    else:
+        batters = pd.DataFrame(columns=['Group', 'Player', 'Scorecard Name', 'Is_Irish_Match', 'Sport80_ID'])
 
-    bowl_resolved = bowling_stats.apply(process_bowl_row, axis=1)
-    bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
-    bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
-    
-    batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
-    bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
-
-    batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
-    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
+    if not bowling_stats.empty:
+        bowl_resolved = bowling_stats.apply(process_bowl_row, axis=1)
+        bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
+        bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
+        bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, domain))
+        bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
+    else:
+        bowlers = pd.DataFrame(columns=['Group', 'Player', 'Scorecard Name', 'Is_Irish_Match', 'Sport80_ID'])
     
     app_dfs = [batters, bowlers]
 
     if not f_abandoned:
         f_abandoned = DEFAULT_FILES.get(domain, {}).get("abandoned", "")
 
+    abandoned_frames: List[pd.DataFrame] = []
     if f_abandoned and os.path.exists(f_abandoned):
-        abandoned_stats = get_excel_df(f_abandoned).copy()
+        df_ab = get_excel_df(f_abandoned)
+        if df_ab is not None and not df_ab.empty:
+            abandoned_frames.append(df_ab.copy())
+
+    archive_dir = os.path.join(os.getcwd(), "archive")
+    if os.path.exists(archive_dir):
+        for fn in sorted(os.listdir(archive_dir)):
+            fn_lower = fn.lower()
+            if fn.endswith(".xlsx") and not fn.startswith("~$") and "abandoned" in fn_lower:
+                if (domain == "Women's" and "women" in fn_lower) or (domain != "Women's" and ("open" in fn_lower or "men" in fn_lower)):
+                    df_ab_arch = get_excel_df(os.path.join(archive_dir, fn))
+                    if df_ab_arch is not None and not df_ab_arch.empty:
+                        abandoned_frames.append(df_ab_arch.copy())
+
+    if abandoned_frames:
+        abandoned_stats = pd.concat(abandoned_frames, ignore_index=True)
         if not abandoned_stats.empty:
             ab_match_col = 'Group' if 'Group' in abandoned_stats.columns else ('Match' if 'Match' in abandoned_stats.columns else abandoned_stats.columns[0])
             ab_name_col = 'Name' if 'Name' in abandoned_stats.columns else abandoned_stats.columns[1]
@@ -4417,9 +4612,14 @@ def run_registration_audit(
             ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col, 'Is_Irish_Match', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
             app_dfs.append(ab_apps)
 
-    all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player'])
-    all_appearances[['Team A', 'Team B', 'Match Date']] = all_appearances['Group'].apply(lambda x: pd.Series(parse_match_group(x)))
-    all_appearances = all_appearances.sort_values(by=['Match Date'])
+    all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player']) if app_dfs else pd.DataFrame()
+    if not all_appearances.empty:
+        all_appearances[['Team A', 'Team B', 'Match Date']] = all_appearances['Group'].apply(lambda x: pd.Series(parse_match_group(x)))
+        all_appearances = all_appearances.sort_values(by=['Match Date'])
+    else:
+        all_appearances['Team A'] = pd.Series(dtype=object)
+        all_appearances['Team B'] = pd.Series(dtype=object)
+        all_appearances['Match Date'] = pd.Series(dtype='datetime64[ns]')
 
     league_dict, team_keys, _ = build_league_dict(league_structure)
     def determine_league(t_a, t_b):
@@ -4540,6 +4740,44 @@ def run_registration_audit(
             played_for = determine_player_team_for_row(mock_row, player_club_map, domain, secondary_map=secondary_map)
             played_base = extract_base_club_name(played_for).lower()
 
+            if played_for.startswith("Unknown ("):
+                r_raw = reg_record.iloc[0].get('Individual Membership Primary Club', '')
+                r_b = extract_base_club_name(str(r_raw)).lower() if pd.notna(r_raw) else ""
+                
+                t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
+                t_raw = reg_record.iloc[0].get(t_cols[0], '') if t_cols else ''
+                t_b = extract_base_club_name(str(t_raw)).lower() if pd.notna(t_raw) else ""
+                
+                t_date_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' in str(c)]
+                t_dt_raw = reg_record.iloc[0].get(t_date_cols[0], pd.NaT) if t_date_cols else pd.NaT
+                t_dt = pd.to_datetime(t_dt_raw, errors='coerce')
+
+                team_a_base = extract_base_club_name(team_a).lower()
+                team_b_base = extract_base_club_name(team_b).lower()
+
+                # 1. Intra-club fixture (e.g. Club 2nd XI v Club 3rd XI)
+                if team_a_base and team_b_base:
+                    if r_b and club_matches_team_base(r_b, team_a_base) and club_matches_team_base(r_b, team_b_base):
+                        played_for = team_a
+                        played_base = r_b
+                    elif t_b and club_matches_team_base(t_b, team_a_base) and club_matches_team_base(t_b, team_b_base):
+                        played_for = team_a
+                        played_base = t_b
+
+                # 2. Transfer between match opponents
+                if played_for.startswith("Unknown (") and r_b and t_b and pd.notna(t_dt):
+                    team_a_matches_transfer = club_matches_team_base(t_b, team_a_base)
+                    team_b_matches_transfer = club_matches_team_base(t_b, team_b_base)
+                    team_a_matches_primary = club_matches_team_base(r_b, team_a_base)
+                    team_b_matches_primary = club_matches_team_base(r_b, team_b_base)
+
+                    if (team_a_matches_transfer and team_b_matches_primary) or (team_b_matches_transfer and team_a_matches_primary):
+                        if pd.notna(match_date) and match_date >= t_dt:
+                            played_for = team_a if team_a_matches_transfer else team_b
+                        else:
+                            played_for = team_a if team_a_matches_primary else team_b
+                        played_base = extract_base_club_name(played_for).lower()
+
             if len(reg_record) > 1:
                 def matches_played_club(r):
                     r_raw = r.get('Individual Membership Primary Club', '')
@@ -4563,7 +4801,8 @@ def run_registration_audit(
             
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
-            transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
+            t_date_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' in str(c)]
+            transfer_date = reg_record.iloc[0].get(t_date_cols[0], pd.NaT) if t_date_cols else pd.NaT
             
             r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
             t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
@@ -4574,10 +4813,20 @@ def run_registration_audit(
             played_for_secondary = False
             if secondary_map:
                 mapped_name = alias_map.get(player.lower(), player.lower())
-                sec_teams = secondary_map.get(mapped_name) or secondary_map.get(player.lower()) or []
+                base_player = re.sub(r'\s*\([^)]*\)', '', player).strip().lower()
+                mapped_base = alias_map.get(base_player, base_player) if alias_map else base_player
+                sec_teams = (
+                    secondary_map.get(mapped_name) or
+                    secondary_map.get(player.lower()) or
+                    secondary_map.get(player) or
+                    secondary_map.get(mapped_base) or
+                    secondary_map.get(base_player) or
+                    []
+                )
                 for st in sec_teams:
                     st_base = extract_base_club_name(st).lower()
-                    if st_base in played_base or played_base in st_base:
+                    if (st_base and (st_base in played_base or played_base in st_base)) or \
+                       ('pathway' in st_base and ('pathway' in team_a.lower() or 'pathway' in team_b.lower() or 'pathway' in str(played_base).lower())):
                         played_for_secondary = True
                         break
             
@@ -4621,7 +4870,16 @@ def run_registration_audit(
             is_pathway_player = False
             if secondary_map:
                 mapped_name = alias_map.get(player.lower(), player.lower()) if alias_map else player.lower()
-                sec_teams = secondary_map.get(mapped_name) or secondary_map.get(player.lower()) or secondary_map.get(player) or []
+                base_player = re.sub(r'\s*\([^)]*\)', '', player).strip().lower()
+                mapped_base = alias_map.get(base_player, base_player) if alias_map else base_player
+                sec_teams = (
+                    secondary_map.get(mapped_name) or
+                    secondary_map.get(player.lower()) or
+                    secondary_map.get(player) or
+                    secondary_map.get(mapped_base) or
+                    secondary_map.get(base_player) or
+                    []
+                )
                 if any('pathway' in str(st).lower() for st in sec_teams):
                     is_pathway_player = True
             
@@ -4876,8 +5134,35 @@ def run_midweek_registration_audit(
     aliases = get_excel_df(f_alias)
     weekend_structure = get_excel_df(f_weekend_league)
     midweek_structure = get_excel_df(f_midweek_league)
-    batting_stats = get_excel_df(f_bat).copy()
-    bowling_stats = get_excel_df(f_bowl).copy()
+    mw_bat_frames = load_multi_season_scorecard_frames(
+        domain="Midweek",
+        stat_type="bat",
+        primary_file=f_bat,
+        include_archive=True
+    )
+    mw_bowl_frames = load_multi_season_scorecard_frames(
+        domain="Midweek",
+        stat_type="bowl",
+        primary_file=f_bowl,
+        include_archive=True
+    )
+
+    batting_stats = pd.concat(mw_bat_frames, ignore_index=True) if mw_bat_frames else pd.DataFrame()
+    bowling_stats = pd.concat(mw_bowl_frames, ignore_index=True) if mw_bowl_frames else pd.DataFrame()
+
+    if not batting_stats.empty:
+        dedup_bat_cols = [c for c in ['Group', 'Name', 'Season'] if c in batting_stats.columns]
+        if len(dedup_bat_cols) >= 2:
+            batting_stats = batting_stats.drop_duplicates(subset=dedup_bat_cols).reset_index(drop=True)
+    else:
+        batting_stats = pd.DataFrame(columns=['Group', 'Name'])
+
+    if not bowling_stats.empty:
+        dedup_bowl_cols = [c for c in ['Group', 'Bowler', 'Season'] if c in bowling_stats.columns]
+        if len(dedup_bowl_cols) >= 2:
+            bowling_stats = bowling_stats.drop_duplicates(subset=dedup_bowl_cols).reset_index(drop=True)
+    else:
+        bowling_stats = pd.DataFrame(columns=['Group', 'Bowler'])
 
     reg_name_col = 'Full Name' if 'Full Name' in registered_players.columns else registered_players.columns[0]
     registered_players[reg_name_col] = registered_players[reg_name_col].astype(str).str.replace('‡', '', regex=False).str.strip()
@@ -4932,16 +5217,23 @@ def run_midweek_registration_audit(
         c_name, s80_id, _, _ = resolve_player_from_row(r, r['Bowler'], id_map, alias_map, player_club_map)
         return pd.Series([c_name, s80_id], index=['Cleaned Name', 'Sport80_ID'])
 
-    bat_resolved = batting_stats.apply(process_mw_bat_row, axis=1)
-    batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
-    batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+    if not batting_stats.empty:
+        bat_resolved = batting_stats.apply(process_mw_bat_row, axis=1)
+        batting_stats['Cleaned Name'] = bat_resolved['Cleaned Name']
+        batting_stats['Sport80_ID'] = bat_resolved['Sport80_ID']
+        batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
+        batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
+    else:
+        batters = pd.DataFrame(columns=['Group', 'Player', 'Scorecard Name', 'Sport80_ID'])
 
-    bowl_resolved = bowling_stats.apply(process_mw_bowl_row, axis=1)
-    bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
-    bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
-    
-    batting_stats['Group'] = batting_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
-    bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
+    if not bowling_stats.empty:
+        bowl_resolved = bowling_stats.apply(process_mw_bowl_row, axis=1)
+        bowling_stats['Cleaned Name'] = bowl_resolved['Cleaned Name']
+        bowling_stats['Sport80_ID'] = bowl_resolved['Sport80_ID']
+        bowling_stats['Group'] = bowling_stats['Group'].apply(lambda x: doc_format_cricket_names(x, "Midweek"))
+        bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
+    else:
+        bowlers = pd.DataFrame(columns=['Group', 'Player', 'Scorecard Name', 'Sport80_ID'])
 
     def parse_match_group(group_str):
         try:
@@ -4958,9 +5250,6 @@ def run_midweek_registration_audit(
             return team_a.strip(), team_b.strip(), match_date
         except: return None, None, None
 
-    batters = batting_stats[['Group', 'Cleaned Name', 'Name', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Name': 'Scorecard Name'})
-    bowlers = bowling_stats[['Group', 'Cleaned Name', 'Bowler', 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', 'Bowler': 'Scorecard Name'})
-    
     app_dfs = [batters, bowlers]
 
     if not f_abandoned:
@@ -4981,9 +5270,14 @@ def run_midweek_registration_audit(
             ab_apps = abandoned_stats[['Group', 'Cleaned Name', ab_name_col, 'Sport80_ID']].rename(columns={'Cleaned Name': 'Player', ab_name_col: 'Scorecard Name'})
             app_dfs.append(ab_apps)
 
-    all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player'])
-    all_appearances[['Team A', 'Team B', 'Match Date']] = all_appearances['Group'].apply(lambda x: pd.Series(parse_match_group(x)))
-    all_appearances = all_appearances.sort_values(by=['Match Date'])
+    all_appearances = pd.concat(app_dfs).drop_duplicates(subset=['Group', 'Player']) if app_dfs else pd.DataFrame()
+    if not all_appearances.empty:
+        all_appearances[['Team A', 'Team B', 'Match Date']] = all_appearances['Group'].apply(lambda x: pd.Series(parse_match_group(x)))
+        all_appearances = all_appearances.sort_values(by=['Match Date'])
+    else:
+        all_appearances['Team A'] = pd.Series(dtype=object)
+        all_appearances['Team B'] = pd.Series(dtype=object)
+        all_appearances['Match Date'] = pd.Series(dtype='datetime64[ns]')
 
     mw_league_dict, mw_team_keys, _ = build_league_dict(midweek_structure)
     wknd_league_dict, wknd_team_keys, _ = build_league_dict(weekend_structure)
@@ -5083,6 +5377,44 @@ def run_midweek_registration_audit(
             played_for = determine_player_team_for_row(mock_row, player_club_map, "Midweek", secondary_map=secondary_map)
             played_base = extract_base_club_name(played_for).lower()
 
+            if played_for.startswith("Unknown ("):
+                r_raw = reg_record.iloc[0].get('Individual Membership Primary Club', '')
+                r_b = extract_base_club_name(str(r_raw)).lower() if pd.notna(r_raw) else ""
+                
+                t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
+                t_raw = reg_record.iloc[0].get(t_cols[0], '') if t_cols else ''
+                t_b = extract_base_club_name(str(t_raw)).lower() if pd.notna(t_raw) else ""
+                
+                t_date_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' in str(c)]
+                t_dt_raw = reg_record.iloc[0].get(t_date_cols[0], pd.NaT) if t_date_cols else pd.NaT
+                t_dt = pd.to_datetime(t_dt_raw, errors='coerce')
+
+                team_a_base = extract_base_club_name(team_a).lower()
+                team_b_base = extract_base_club_name(team_b).lower()
+
+                # 1. Intra-club fixture (e.g. Club 2nd XI v Club 3rd XI)
+                if team_a_base and team_b_base:
+                    if r_b and club_matches_team_base(r_b, team_a_base) and club_matches_team_base(r_b, team_b_base):
+                        played_for = team_a
+                        played_base = r_b
+                    elif t_b and club_matches_team_base(t_b, team_a_base) and club_matches_team_base(t_b, team_b_base):
+                        played_for = team_a
+                        played_base = t_b
+
+                # 2. Transfer between match opponents
+                if played_for.startswith("Unknown (") and r_b and t_b and pd.notna(t_dt):
+                    team_a_matches_transfer = club_matches_team_base(t_b, team_a_base)
+                    team_b_matches_transfer = club_matches_team_base(t_b, team_b_base)
+                    team_a_matches_primary = club_matches_team_base(r_b, team_a_base)
+                    team_b_matches_primary = club_matches_team_base(r_b, team_b_base)
+
+                    if (team_a_matches_transfer and team_b_matches_primary) or (team_b_matches_transfer and team_a_matches_primary):
+                        if pd.notna(match_date) and match_date >= t_dt:
+                            played_for = team_a if team_a_matches_transfer else team_b
+                        else:
+                            played_for = team_a if team_a_matches_primary else team_b
+                        played_base = extract_base_club_name(played_for).lower()
+
             if len(reg_record) > 1:
                 def matches_played_club(r):
                     r_raw = r.get('Individual Membership Primary Club', '')
@@ -5106,7 +5438,8 @@ def run_midweek_registration_audit(
             
             t_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' not in str(c)]
             transfer_club = reg_record.iloc[0].get(t_cols[0], pd.NA) if t_cols else pd.NA
-            transfer_date = reg_record.iloc[0].get('Transfer Date', pd.NaT)
+            t_date_cols = [c for c in reg_record.columns if 'Transfer' in str(c) and 'Date' in str(c)]
+            transfer_date = reg_record.iloc[0].get(t_date_cols[0], pd.NaT) if t_date_cols else pd.NaT
             
             r_base = extract_base_club_name(str(raw_club)).lower() if pd.notna(raw_club) else ""
             t_base = extract_base_club_name(str(transfer_club)).lower() if pd.notna(transfer_club) else ""
@@ -5117,10 +5450,20 @@ def run_midweek_registration_audit(
             played_for_secondary = False
             if secondary_map:
                 mapped_name = alias_map.get(player.lower(), player.lower())
-                sec_teams = secondary_map.get(mapped_name) or secondary_map.get(player.lower()) or []
+                base_player = re.sub(r'\s*\([^)]*\)', '', player).strip().lower()
+                mapped_base = alias_map.get(base_player, base_player) if alias_map else base_player
+                sec_teams = (
+                    secondary_map.get(mapped_name) or
+                    secondary_map.get(player.lower()) or
+                    secondary_map.get(player) or
+                    secondary_map.get(mapped_base) or
+                    secondary_map.get(base_player) or
+                    []
+                )
                 for st in sec_teams:
                     st_base = extract_base_club_name(st).lower()
-                    if st_base in played_base or played_base in st_base:
+                    if (st_base and (st_base in played_base or played_base in st_base)) or \
+                       ('pathway' in st_base and ('pathway' in team_a.lower() or 'pathway' in team_b.lower() or 'pathway' in str(played_base).lower())):
                         played_for_secondary = True
                         break
             
@@ -5859,14 +6202,15 @@ def evaluate_club_starring_inactivity(
     get_official_name_func: Any,
     international_players: List[str],
     eval_date: Optional[datetime] = None,
-    is_intl_override: bool = False
+    is_intl_override: bool = False,
+    dispensations: Optional[Union[Dict[str, str], pd.DataFrame, List[Any], Set[str]]] = None
 ) -> pd.DataFrame:
     """
     Evaluates player eligibility and absence for a single club's starred roster against official match appearances.
     Uses the exact Rule A11/A12 criteria:
     - 0 appearances: flags alert if the team has played >= 3 matches.
     - Active appearances: flags alert if inactive for > 21 days AND the team has played >= 3 matches since last appearance.
-    - Exemption for Irish international duty.
+    - Exemption for Irish international duty and Board-Approved Availability Dispensations.
 
     Inputs:
         club_name: Name of club.
@@ -5878,6 +6222,7 @@ def evaluate_club_starring_inactivity(
         international_players: List of international players.
         eval_date: Audit date.
         is_intl_override: Global international duty exemption flag.
+        dispensations: Optional dictionary, DataFrame, or list of board-approved availability dispensations.
 
     Outputs:
         pd.DataFrame: Table of player absence statuses.
@@ -5891,6 +6236,28 @@ def evaluate_club_starring_inactivity(
         return pd.DataFrame(columns=[
             "Player", "Starred Tier", "Eligible Appearances", "Last Played Date", "Days Inactive", "Missed Matches", "Administrative Status"
         ])
+
+    disp_map: Dict[str, str] = {}
+    if dispensations is not None:
+        if isinstance(dispensations, pd.DataFrame):
+            p_col = next((c for c in ["Player Name", "Player", "Full Name", "Name"] if c in dispensations.columns), None)
+            t_col = next((c for c in ["Allowed Lower Tier", "Allowed Tier", "Tier"] if c in dispensations.columns), None)
+            if p_col and t_col:
+                for _, d_row in dispensations.iterrows():
+                    pn = str(d_row.get(p_col, "")).strip().lower()
+                    pt = str(d_row.get(t_col, "2nd XI")).strip()
+                    if pn: disp_map[pn] = pt
+        elif isinstance(dispensations, dict):
+            for k, v in dispensations.items():
+                disp_map[str(k).strip().lower()] = str(v).strip()
+        elif isinstance(dispensations, (list, set)):
+            for item in dispensations:
+                if isinstance(item, dict):
+                    pn = str(item.get("Player Name", item.get("Player", ""))).strip().lower()
+                    pt = str(item.get("Allowed Lower Tier", item.get("Tier", "2nd XI"))).strip()
+                    if pn: disp_map[pn] = pt
+                else:
+                    disp_map[str(item).strip().lower()] = "2nd XI"
 
     df_club, team_match_dates = report_build_club_matches_df(club_name, all_app, override_map, comp_map)
 
@@ -5932,6 +6299,36 @@ def evaluate_club_starring_inactivity(
                 "Days Inactive": 0,
                 "Missed Matches": 0,
                 "Administrative Status": "International Duty Exemption 🇮🇪"
+            })
+            continue
+
+        # Check Board-Approved Availability Dispensation
+        is_disp = False
+        allowed_disp_tier = ""
+        if disp_map:
+            if official_p_lower in disp_map:
+                is_disp = True
+                allowed_disp_tier = disp_map[official_p_lower]
+            elif p_full.lower() in disp_map:
+                is_disp = True
+                allowed_disp_tier = disp_map[p_full.lower()]
+            else:
+                for d_k, d_v in disp_map.items():
+                    if d_k in official_p_lower or d_k in p_full.lower():
+                        is_disp = True
+                        allowed_disp_tier = d_v
+                        break
+
+        if is_disp:
+            last_date_str = p_apps['Parsed_Date'].max().strftime("%d/%m/%Y") if matches_played > 0 and pd.notna(p_apps['Parsed_Date'].max()) else "No Matches"
+            records.append({
+                "Player": p_full,
+                "Starred Tier": p_tier,
+                "Eligible Appearances": matches_played,
+                "Last Played Date": last_date_str,
+                "Days Inactive": 0,
+                "Missed Matches": 0,
+                "Administrative Status": f"Availability Dispensation 📜 ({allowed_disp_tier})"
             })
             continue
 
@@ -9942,4 +10339,1121 @@ def auto_link_high_confidence_players(
         "linked_count": len(to_link),
         "linked_players": to_link,
         "remaining_count": len(unlinked) - len(to_link),
-    }
+    }
+
+
+# ==========================================
+# 2027 STARRING PREDICTOR & MODELING ENGINE
+# ==========================================
+
+_RE_TIER_PATTERN = re.compile(r'(?i)\b([1-6])(?:st|nd|rd|th)?\s*(?:xi|team)?\b')
+_RE_MW_PATTERN = re.compile(r'(?i)\b(?:midweek|mw)\s*(?:xi|team)?\b')
+
+def extract_match_tier(group_str: str, club_name: Optional[str] = None) -> str:
+    """
+    Parses the team level (e.g. '1st XI', '2nd XI', ..., '6th XI', 'Midweek XI') from a match
+    group string, optionally isolating the specific team represented by club_name.
+
+    Inputs:
+        group_str: Raw match fixture group string (e.g. 'CSNI 5th XI v BISC 5th XI, TBC - 25 April 2026').
+        club_name: Optional club name to isolate which team tier the player represented.
+
+    Outputs:
+        str: Standardized tier string ('1st XI', '2nd XI', '3rd XI', '4th XI', '5th XI', '6th XI', or 'Midweek XI').
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    if not group_str or pd.isna(group_str):
+        return "1st XI"
+
+    text = str(group_str).strip()
+
+    if club_name:
+        clean_c = extract_base_club_name(club_name).lower()
+        parts = re.split(r'\s+v\s+|\s+vs\s+', text, flags=re.IGNORECASE)
+        for part in parts:
+            if clean_c in part.lower():
+                text = part
+                break
+
+    if _RE_MW_PATTERN.search(text):
+        return "Midweek XI"
+
+    m = _RE_TIER_PATTERN.search(text)
+    if m:
+        num = m.group(1)
+        suffix = "st" if num == "1" else ("nd" if num == "2" else ("rd" if num == "3" else "th"))
+        return f"{num}{suffix} XI"
+
+    return "1st XI"
+
+
+def resolve_starring_history_path() -> Optional[str]:
+    """
+    Dynamically resolves the absolute file path for 'NCU_Club_Starring_History.xlsx'
+    across local development environments and production deployment directories.
+
+    Outputs:
+        Optional[str]: Absolute path to 'NCU_Club_Starring_History.xlsx' if found, else None.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py.
+    """
+    candidates = [
+        os.path.join(os.path.dirname(os.path.abspath(__file__)), "NCU_Club_Starring_History.xlsx"),
+        os.path.abspath("NCU_Club_Starring_History.xlsx"),
+        os.path.join(os.getcwd(), "NCU_Club_Starring_History.xlsx"),
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
+
+
+def ensure_archive_directory(project_root: Optional[str] = None) -> str:
+    """
+    Validates that an archive/ folder exists within the project root, creating it if needed.
+
+    Inputs:
+        project_root: Optional root directory path (defaults to current working directory).
+
+    Outputs:
+        str: Absolute path to the validated archive/ directory.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    root = os.path.abspath(project_root) if project_root else os.getcwd()
+    archive_dir = os.path.join(root, "archive")
+    os.makedirs(archive_dir, exist_ok=True)
+    return archive_dir
+
+
+def extract_season_from_path(file_path: str, default_season: int = 2026) -> int:
+    """
+    Extracts a 4-digit season year from a file path or filename string.
+
+    Inputs:
+        file_path: File system path or filename.
+        default_season: Fallback year if no valid 4-digit year is found (default 2026).
+
+    Outputs:
+        int: Extracted season year integer.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    base = os.path.basename(file_path)
+    matches = re.findall(r'(?:20[2-9]\d)', base)
+    if matches:
+        return int(matches[-1])
+    return default_season
+
+
+def archive_completed_season(
+    target_year: int = 2026,
+    project_root: Optional[str] = None
+) -> List[str]:
+    """
+    Safely archives active season raw data sheets for Saturday/Open, Women's, and Midweek cricket
+    into the archive/ directory stamped with the year suffix (e.g., Open_Season_2026.xlsx).
+
+    Inputs:
+        target_year: Season year to stamp onto archived files (default 2026).
+        project_root: Optional project root folder (defaults to current working directory).
+
+    Outputs:
+        List[str]: Paths of the newly created archive files.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    archive_dir = ensure_archive_directory(project_root)
+    root = os.path.abspath(project_root) if project_root else os.getcwd()
+
+    archive_map: Dict[str, str] = {
+        # Open / Saturday / Men's
+        "2026 Season League Structure for Gemini AI.xlsx": f"Open_Season_{target_year}.xlsx",
+        "NV Play NCU League and Saturday Cup batting stats for season.xlsx": f"Open_Batting_{target_year}.xlsx",
+        "NV Play NCU League and Saturday Cup bowling stats for season.xlsx": f"Open_Bowling_{target_year}.xlsx",
+        "NV Play NCU League and Saturday Cup player appearances for abandoned games.xlsx": f"Open_Abandoned_{target_year}.xlsx",
+        "Irish Competitions 2026 Batting stats.xlsx": f"Irish_Batting_{target_year}.xlsx",
+        "Irish Competitions 2026 Bowling stats.xlsx": f"Irish_Bowling_{target_year}.xlsx",
+        "3. NCU Complete -Men's- Starring List from 1st June.xlsx": f"Open_Starring_{target_year}.xlsx",
+        # Women's
+        "2026 Season League Structure Women for Gemini AI.xlsx": f"Women_Season_{target_year}.xlsx",
+        "NV Play Women's Fixtures batting stats for season.xlsx": f"Women_Batting_{target_year}.xlsx",
+        "NV Play Women's Fixtures bowling stats for season.xlsx": f"Women_Bowling_{target_year}.xlsx",
+        "NV Play Women's Fixtures player appearances for abandoned games.xlsx": f"Women_Abandoned_{target_year}.xlsx",
+        "13. NCU Complete Women's Starring List from 1st June.xlsx": f"Women_Starring_{target_year}.xlsx",
+        # Midweek
+        "2026 Season Midweek League Structure for Gemini AI.xlsx": f"Midweek_Season_{target_year}.xlsx",
+        "NV Play Midweek League batting stats for season.xlsx": f"Midweek_Batting_{target_year}.xlsx",
+        "NV Play Midweek League bowling stats for season.xlsx": f"Midweek_Bowling_{target_year}.xlsx",
+    }
+
+    archived_files: List[str] = []
+    for src_name, dst_name in archive_map.items():
+        src_path = os.path.join(root, src_name)
+        if os.path.exists(src_path):
+            dst_path = os.path.join(archive_dir, dst_name)
+            shutil.copy2(src_path, dst_path)
+            archived_files.append(dst_path)
+
+    for f in os.listdir(root):
+        if f.endswith(".xlsx") and not f.startswith("~$") and f not in archive_map:
+            f_lower = f.lower()
+            if (str(target_year) in f) and any(kw in f_lower for kw in ["bat", "bowl", "abandoned", "league structure"]):
+                src_path = os.path.join(root, f)
+                dst_name = f if f.endswith(f"_{target_year}.xlsx") or f"{target_year}" in f else f"{os.path.splitext(f)[0]}_{target_year}.xlsx"
+                dst_path = os.path.join(archive_dir, dst_name)
+                if not os.path.exists(dst_path):
+                    shutil.copy2(src_path, dst_path)
+                    archived_files.append(dst_path)
+
+    return archived_files
+
+
+def generate_clean_season_templates(
+    target_year: int = 2027,
+    project_root: Optional[str] = None,
+    files_to_clean: Optional[List[str]] = None
+) -> List[str]:
+    """
+    Overwrites the active season scorecard and structure files with blank rows,
+    preserving only the formal structural columns, validation strings, and default
+    #1F4E78 dark navy header styles (GEMINI.md protocol).
+
+    Inputs:
+        target_year: Upcoming season to initialize (default 2027).
+        project_root: Optional project root folder.
+        files_to_clean: Optional list of file paths to wipe/initialize.
+
+    Outputs:
+        List[str]: Paths of the newly generated clean season templates.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    root = os.path.abspath(project_root) if project_root else os.getcwd()
+
+    if files_to_clean is None:
+        target_names = [
+            "NV Play NCU League and Saturday Cup batting stats for season.xlsx",
+            "NV Play NCU League and Saturday Cup bowling stats for season.xlsx",
+            "NV Play NCU League and Saturday Cup player appearances for abandoned games.xlsx",
+            "Irish Competitions 2026 Batting stats.xlsx",
+            "Irish Competitions 2026 Bowling stats.xlsx",
+            "NV Play Women's Fixtures batting stats for season.xlsx",
+            "NV Play Women's Fixtures bowling stats for season.xlsx",
+            "NV Play Women's Fixtures player appearances for abandoned games.xlsx",
+            "NV Play Midweek League batting stats for season.xlsx",
+            "NV Play Midweek League bowling stats for season.xlsx",
+        ]
+        files_to_clean = [os.path.join(root, fn) for fn in target_names if os.path.exists(os.path.join(root, fn))]
+
+    header_fill = PatternFill(start_color="1F4E78", end_color="1F4E78", fill_type="solid")
+    header_font = Font(color="FFFFFF", bold=True)
+    cleaned_files: List[str] = []
+
+    for fpath in files_to_clean:
+        if not os.path.exists(fpath):
+            continue
+        try:
+            wb = openpyxl.load_workbook(fpath)
+            for ws in wb.worksheets:
+                if ws.max_row < 1:
+                    continue
+                headers = [ws.cell(row=1, column=c).value for c in range(1, ws.max_column + 1)]
+                if not any(headers):
+                    continue
+
+                if ws.max_row > 1:
+                    ws.delete_rows(2, ws.max_row)
+
+                for col_idx, h_val in enumerate(headers, start=1):
+                    cell = ws.cell(row=1, column=col_idx)
+                    cell.value = h_val
+                    cell.fill = header_fill
+                    cell.font = header_font
+
+                ws.freeze_panes = "A2"
+
+                for col_idx, h_val in enumerate(headers, start=1):
+                    col_letter = get_column_letter(col_idx)
+                    val_len = len(str(h_val or ""))
+                    ws.column_dimensions[col_letter].width = max(val_len + 2, 10)
+
+            wb.save(fpath)
+            wb.close()
+            cleaned_files.append(fpath)
+        except Exception:
+            pass
+
+    return cleaned_files
+
+
+def load_multi_season_scorecard_frames(
+    domain: str = "Men's",
+    stat_type: str = "bat",
+    primary_file: Optional[str] = None,
+    include_irish: bool = True,
+    include_midweek: bool = False,
+    include_archive: bool = True,
+    project_root: Optional[str] = None,
+    custom_files: Optional[Dict[str, str]] = None
+) -> List[pd.DataFrame]:
+    """
+    Dynamically searches pattern arrays across active root files and any .xlsx files in archive/,
+    returning a combined list of DataFrames tagged with an explicit 'Season' metadata column.
+
+    Inputs:
+        domain: Competition domain ("Men's", "Women's", or "Midweek").
+        stat_type: Stat file category ("bat" or "bowl").
+        primary_file: Optional path to an active scorecard file.
+        include_irish: Whether to include Irish Cup / National Cup scorecards (Men's).
+        include_midweek: Whether to include Midweek League scorecards.
+        include_archive: Whether to scan and load historical files from the archive/ folder.
+        project_root: Optional project root folder (defaults to current working directory).
+        custom_files: Optional overrides mapping file keys.
+
+    Outputs:
+        List[pd.DataFrame]: Loaded dataframes each enriched with an explicit 'Season' column.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_seasonal_rollover.py.
+    """
+    if project_root is None:
+        if primary_file and os.path.isabs(primary_file):
+            project_root = os.path.dirname(primary_file)
+        elif custom_files:
+            for k in ["bat", "bowl", "reg", "league"]:
+                if k in custom_files and custom_files[k] and os.path.isabs(custom_files[k]):
+                    project_root = os.path.dirname(custom_files[k])
+                    break
+
+    root = os.path.abspath(project_root) if project_root else os.getcwd()
+    frames: List[pd.DataFrame] = []
+    loaded_canonical_paths: Set[str] = set()
+
+    def _ingest_file(fpath: str, default_yr: Optional[int] = None) -> None:
+        real_p = os.path.abspath(fpath)
+        if real_p in loaded_canonical_paths:
+            return
+        if not os.path.exists(real_p):
+            return
+        df = get_excel_df(real_p)
+        if df is not None and not df.empty:
+            loaded_canonical_paths.add(real_p)
+            df_copy = df.copy()
+            extracted_grp_yr = None
+            if "Group" in df_copy.columns:
+                for grp_val in df_copy["Group"].dropna().astype(str).head(10):
+                    y_m = re.findall(r'(?:20[2-9]\d)', grp_val)
+                    if y_m:
+                        extracted_grp_yr = int(y_m[-1])
+                        break
+            yr = default_yr or (extract_season_from_path(real_p, default_season=0) or extracted_grp_yr or 2026)
+            if "Season" not in df_copy.columns:
+                df_copy["Season"] = yr
+            else:
+                df_copy["Season"] = df_copy["Season"].fillna(yr).astype(int)
+            if "Is_Irish_Match" not in df_copy.columns:
+                df_copy["Is_Irish_Match"] = ("irish" in real_p.lower())
+            frames.append(df_copy)
+
+    # 1. Active Root File Ingestion
+    c_files = custom_files or {}
+    if stat_type in c_files and c_files[stat_type]:
+        _ingest_file(c_files[stat_type])
+    elif primary_file and os.path.exists(primary_file):
+        _ingest_file(primary_file)
+    else:
+        def_file = DEFAULT_FILES.get(domain, {}).get(stat_type, "")
+        if def_file and os.path.exists(def_file):
+            _ingest_file(def_file)
+
+    if domain == "Men's" and include_irish:
+        irish_key = f"irish_{stat_type}"
+        irish_f = c_files.get(irish_key, f"Irish Competitions 2026 {'Batting' if stat_type == 'bat' else 'Bowling'} stats.xlsx")
+        irish_full = os.path.join(root, irish_f) if not os.path.isabs(irish_f) else irish_f
+        if os.path.exists(irish_full):
+            _ingest_file(irish_full)
+
+    if include_midweek:
+        mw_f = c_files.get(f"mw_{stat_type}", f"NV Play Midweek League {'batting' if stat_type == 'bat' else 'bowling'} stats for season.xlsx")
+        mw_full = os.path.join(root, mw_f) if not os.path.isabs(mw_f) else mw_f
+        if os.path.exists(mw_full):
+            _ingest_file(mw_full)
+
+    # 2. Archive Directory Multi-Year Ingestion
+    if include_archive:
+        archive_dir = os.path.join(root, "archive")
+        if os.path.exists(archive_dir):
+            for fn in sorted(os.listdir(archive_dir)):
+                if not fn.endswith(".xlsx") or fn.startswith("~$"):
+                    continue
+                fpath = os.path.join(archive_dir, fn)
+                fn_lower = fn.lower()
+
+                stat_match = (stat_type == "bat" and "bat" in fn_lower) or (stat_type == "bowl" and "bowl" in fn_lower)
+                if not stat_match:
+                    continue
+
+                is_womens_file = "women" in fn_lower
+                is_midweek_file = "midweek" in fn_lower
+                is_irish_file = "irish" in fn_lower
+
+                if domain == "Women's":
+                    if is_womens_file:
+                        _ingest_file(fpath)
+                elif domain == "Midweek":
+                    if is_midweek_file:
+                        _ingest_file(fpath)
+                else:  # Men's / Open
+                    if is_womens_file:
+                        continue
+                    if is_midweek_file and not include_midweek:
+                        continue
+                    if is_irish_file and not include_irish:
+                        continue
+                    _ingest_file(fpath)
+
+    return frames
+
+
+_PERF_MATRIX_DOMAIN_CACHE: Dict[Tuple[str, bool, bool, Optional[Tuple[Tuple[str, str], ...]]], Dict[str, Any]] = {}
+
+
+def get_perf_matrix_domain_context(
+    domain: str = "Men's",
+    include_midweek: bool = False,
+    include_irish: bool = True,
+    custom_files: Optional[Dict[str, str]] = None
+) -> Dict[str, Any]:
+    """
+    Loads and caches domain-level registries, aliases, scorecards, and exemption rosters
+    shared across all clubs within a single competition domain.
+
+    Inputs:
+        domain: Competition domain ("Men's" or "Women's").
+        include_midweek: Whether to include Midweek League scorecards.
+        include_irish: Whether to include Irish Cup / National Cup scorecards.
+        custom_files: Optional dictionary mapping file keys to paths.
+
+    Outputs:
+        Dict[str, Any]: Pre-parsed reference mappings, parsed starring dictionary, and combined scorecards.
+
+    Helper Apps:
+        app.py, engine.py, tests/verify_league_wide_hygiene.py, tests/test_starring_predictor.py.
+    """
+    global _PERF_MATRIX_DOMAIN_CACHE
+    c_key = tuple(sorted(custom_files.items())) if custom_files else None
+    cache_key = (domain, include_midweek, include_irish, c_key)
+    if cache_key in _PERF_MATRIX_DOMAIN_CACHE:
+        return _PERF_MATRIX_DOMAIN_CACHE[cache_key]
+
+    c_files = dict(DEFAULT_FILES.get(domain, DEFAULT_FILES["Men's"]))
+    if custom_files:
+        c_files.update(custom_files)
+
+    f_reg = c_files.get("reg", "")
+    f_alias = c_files.get("alias", "")
+    f_id_map = c_files.get("id_map", "")
+    f_bat = c_files.get("bat", "")
+    f_bowl = c_files.get("bowl", "")
+    f_starring = c_files.get("starring", "")
+    f_cup = c_files.get("cup", DEFAULT_CUP_FILE)
+    cup_match_set, t20_match_set = get_cup_and_t20_match_sets(f_cup, domain)
+
+    reg_df = get_excel_df(f_reg) if f_reg and os.path.exists(f_reg) else pd.DataFrame()
+    alias_df = get_excel_df(f_alias) if f_alias and os.path.exists(f_alias) else pd.DataFrame()
+    id_map_df = get_excel_df(f_id_map) if f_id_map and os.path.exists(f_id_map) else None
+    alias_map = build_alias_map(alias_df, domain)
+    id_map = build_id_map(id_map_df)
+    player_club_map = build_player_club_map(reg_df, alias_map, domain, id_map_df=id_map_df)
+
+    bat_frames = load_multi_season_scorecard_frames(
+        domain=domain,
+        stat_type="bat",
+        primary_file=f_bat,
+        include_irish=include_irish,
+        include_midweek=include_midweek,
+        include_archive=True,
+        custom_files=custom_files
+    )
+    bowl_frames = load_multi_season_scorecard_frames(
+        domain=domain,
+        stat_type="bowl",
+        primary_file=f_bowl,
+        include_irish=include_irish,
+        include_midweek=include_midweek,
+        include_archive=True,
+        custom_files=custom_files
+    )
+
+    combined_bat = pd.concat(bat_frames, ignore_index=True) if bat_frames else pd.DataFrame()
+    combined_bowl = pd.concat(bowl_frames, ignore_index=True) if bowl_frames else pd.DataFrame()
+
+    if not combined_bat.empty:
+        dedup_bat_cols = [c for c in ['Group', 'Name', 'Season'] if c in combined_bat.columns]
+        if len(dedup_bat_cols) >= 2:
+            combined_bat = combined_bat.drop_duplicates(subset=dedup_bat_cols).reset_index(drop=True)
+        combined_bat['_grp_lower'] = combined_bat['Group'].astype(str).str.lower()
+
+    if not combined_bowl.empty:
+        dedup_bowl_cols = [c for c in ['Group', 'Bowler', 'Season'] if c in combined_bowl.columns]
+        if len(dedup_bowl_cols) >= 2:
+            combined_bowl = combined_bowl.drop_duplicates(subset=dedup_bowl_cols).reset_index(drop=True)
+        combined_bowl['_grp_lower'] = combined_bowl['Group'].astype(str).str.lower()
+
+    parsed_dict: Dict[str, pd.DataFrame] = {}
+    if f_starring and os.path.exists(f_starring):
+        _, parsed_dict = get_starring_data(f_starring)
+
+    intl_exempt_set: Set[str] = set()
+    dispensations_dict: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    starring_hist_path = resolve_starring_history_path()
+    if starring_hist_path and os.path.exists(starring_hist_path):
+        try:
+            df_intl = read_excel_calamine(starring_hist_path, sheet_name="International Exemptions")
+            if df_intl is not None and not df_intl.empty:
+                i_name_col = next((c for c in ["Player", "Name", "Full Name"] if c in df_intl.columns), df_intl.columns[0])
+                for val in df_intl[i_name_col].dropna():
+                    intl_exempt_set.add(str(val).strip().lower())
+        except Exception:
+            pass
+
+        try:
+            df_disp = read_excel_calamine(starring_hist_path, sheet_name="Board_Dispensations")
+            if df_disp is not None and not df_disp.empty:
+                dp_col = next((c for c in ["Player Name", "Player", "Full Name", "Name"] if c in df_disp.columns), None)
+                dc_col = next((c for c in ["Club Name", "Club"] if c in df_disp.columns), None)
+                dt_col = next((c for c in ["Allowed Lower Tier", "Allowed Tier", "Tier"] if c in df_disp.columns), None)
+                dr_col = next((c for c in ["Dispensation Reason", "Reason"] if c in df_disp.columns), None)
+                if dp_col:
+                    for _, drow in df_disp.iterrows():
+                        p_val = str(drow.get(dp_col, "")).strip().lower()
+                        c_val = str(drow.get(dc_col, "")).strip().lower() if dc_col else ""
+                        t_val = str(drow.get(dt_col, "2nd XI")).strip() if dt_col else "2nd XI"
+                        r_val = str(drow.get(dr_col, "")).strip() if dr_col else ""
+                        if p_val:
+                            dispensations_dict[(p_val, c_val)] = {"allowed_tier": t_val, "reason": r_val}
+                            if (p_val, "") not in dispensations_dict:
+                                dispensations_dict[(p_val, "")] = {"allowed_tier": t_val, "reason": r_val}
+        except Exception:
+            pass
+
+    overseas_pro_set: Set[str] = set()
+    if reg_df is not None and not reg_df.empty:
+        cat_col = next((c for c in ["Category", "Membership_Type", "Type", "Member Type"] if c in reg_df.columns), None)
+        p_name_col = next((c for c in ["Full Name", "Name", "Member"] if c in reg_df.columns), None)
+        if cat_col and p_name_col:
+            for _, r in reg_df.iterrows():
+                cat = str(r.get(cat_col, "")).lower()
+                if "overseas" in cat:
+                    overseas_pro_set.add(str(r.get(p_name_col, "")).strip().lower())
+
+    ctx = {
+        "cup_match_set": cup_match_set,
+        "t20_match_set": t20_match_set,
+        "reg_df": reg_df,
+        "alias_map": alias_map,
+        "id_map": id_map,
+        "player_club_map": player_club_map,
+        "combined_bat": combined_bat,
+        "combined_bowl": combined_bowl,
+        "parsed_dict": parsed_dict,
+        "intl_exempt_set": intl_exempt_set,
+        "overseas_pro_set": overseas_pro_set,
+        "dispensations_dict": dispensations_dict,
+    }
+    _PERF_MATRIX_DOMAIN_CACHE[cache_key] = ctx
+    return ctx
+
+
+def clear_perf_matrix_domain_cache() -> None:
+    """Clears the cached domain context for club performance matrix calculations."""
+    global _PERF_MATRIX_DOMAIN_CACHE
+    _PERF_MATRIX_DOMAIN_CACHE.clear()
+
+
+
+def build_club_player_performance_matrix(
+    club_name: str,
+    domain: str = "Men's",
+    include_midweek: bool = False,
+    include_irish: bool = True,
+    custom_files: Optional[Dict[str, str]] = None
+) -> pd.DataFrame:
+    """
+    Aggregates match runs, wickets, maidens, appearances, catches, and modal team tiers
+    across all 2026 scorecards for a specific club's roster.
+
+    Inputs:
+        club_name: Target club name (e.g. 'Waringstown', 'CSNI', 'Instonians').
+        domain: Competition domain ("Men's" or "Women's").
+        include_midweek: Whether to include Midweek League scorecards in the aggregation.
+        include_irish: Whether to include Irish Cup / National Cup fixtures in the aggregation.
+        custom_files: Optional dictionary mapping file keys ('reg', 'alias', 'bat', 'bowl', 'starring') to paths.
+
+    Outputs:
+        pd.DataFrame: Performance matrix per player with match aggregates, tier breakdowns,
+                      2026 starring tier, and qualification metadata.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_starring_predictor.py.
+    """
+    clean_club = extract_base_club_name(club_name).strip()
+    clean_club_lower = clean_club.lower()
+
+    ctx = get_perf_matrix_domain_context(domain, include_midweek, include_irish, custom_files)
+    cup_match_set = ctx["cup_match_set"]
+    t20_match_set = ctx["t20_match_set"]
+    alias_map = ctx["alias_map"]
+    id_map = ctx["id_map"]
+    player_club_map = ctx["player_club_map"]
+    combined_bat = ctx["combined_bat"]
+    combined_bowl = ctx["combined_bowl"]
+    parsed_dict = ctx["parsed_dict"]
+    intl_exempt_set = ctx["intl_exempt_set"]
+    overseas_pro_set = ctx["overseas_pro_set"]
+    dispensations_dict = ctx.get("dispensations_dict", {})
+
+    club_2026_starring: Dict[str, Tuple[str, int]] = {}
+    canonical_starred_players: Set[str] = set()
+    if parsed_dict:
+        c_star_df = parsed_dict.get(clean_club, pd.DataFrame())
+        if c_star_df is not None and not c_star_df.empty:
+            tier_col = next((c for c in ["XI_Level", "Starred Tier", "Team", "Tier"] if c in c_star_df.columns), None)
+            name_col = next((c for c in ["Full Name", "Name", "Player"] if c in c_star_df.columns), None)
+            rank_col = next((c for c in ["Rank", "Order"] if c in c_star_df.columns), None)
+            for idx, r in c_star_df.iterrows():
+                nm = str(r.get(name_col, "")).strip() if name_col else ""
+                tr = str(r.get(tier_col, "1st XI")).strip() if tier_col else "1st XI"
+                rk = int(r.get(rank_col, idx + 1)) if rank_col and str(r.get(rank_col, "")).isdigit() else (idx + 1)
+                if nm:
+                    r_ctx = dict(r) if hasattr(r, 'to_dict') else dict(r)
+                    r_ctx['Team'] = clean_club
+                    r_ctx['Club'] = clean_club
+                    c_resolved, _, _, _ = resolve_player_from_row(r_ctx, nm, id_map, alias_map, player_club_map, prefer_nv_play_name=True)
+                    clean_c_resolved = strip_club_suffix(c_resolved.replace(" (Unverified/Requires Manual Check)", "").strip(), clean_club)
+                    canonical_starred_players.add(clean_c_resolved)
+                    club_2026_starring[clean_c_resolved.lower()] = (tr, rk)
+                    club_2026_starring[strip_club_suffix(nm, clean_club).lower()] = (tr, rk)
+                    club_2026_starring[nm.lower()] = (tr, rk)
+
+    player_data: Dict[str, Dict[str, Any]] = {}
+
+    def get_player_entry(p_name: str) -> Dict[str, Any]:
+        clean_p = strip_club_suffix(p_name, clean_club)
+        low_p = clean_p.strip().lower()
+        if low_p not in player_data:
+            star_info = club_2026_starring.get(low_p, ("Unstarred", 99))
+            is_intl = low_p in intl_exempt_set or any(i in low_p for i in intl_exempt_set)
+            is_pro = low_p in overseas_pro_set or any(o in low_p for o in overseas_pro_set)
+            disp_info = dispensations_dict.get((low_p, clean_club_lower)) or dispensations_dict.get((low_p, ""))
+            avail_disp = disp_info["allowed_tier"] if disp_info else ""
+            disp_reason = disp_info["reason"] if disp_info else ""
+            player_data[low_p] = {
+                "Player": clean_p,
+                "Club": clean_club,
+                "Matches_Set": set(),
+                "Runs": 0,
+                "Innings_Bat": 0,
+                "Not_Outs": 0,
+                "High_Score": 0,
+                "50s": 0,
+                "100s": 0,
+                "Wickets": 0,
+                "Balls_Bowled": 0,
+                "Maidens": 0,
+                "Runs_Conceded": 0,
+                "5W": 0,
+                "Best_Wickets": 0,
+                "Best_Runs": 999,
+                "Best_Bowling": "—",
+                "Catches": 0,
+                "Catches_As_Keeper": 0,
+                "Stumpings": 0,
+                "Tier_Counts": {},
+                "Match_Performances": [],
+                "2026_Starred_Tier": star_info[0],
+                "2026_Starred_Rank": star_info[1],
+                "Is_International": is_intl,
+                "Is_Overseas_Pro": is_pro,
+                "Availability_Dispensation": avail_disp,
+                "Dispensation_Reason": disp_reason,
+            }
+        else:
+            current_disp = player_data[low_p]["Player"]
+            if any(w.isupper() and len(w) > 2 for w in current_disp.split()) and not any(w.isupper() and len(w) > 2 for w in clean_p.split()):
+                player_data[low_p]["Player"] = clean_p
+        return player_data[low_p]
+
+    for p_canon in sorted(canonical_starred_players):
+        get_player_entry(p_canon)
+
+    if not combined_bat.empty:
+        if '_grp_lower' in combined_bat.columns:
+            mask_bat = combined_bat['_grp_lower'].str.contains(clean_club_lower, regex=False, na=False)
+        else:
+            mask_bat = combined_bat['Group'].astype(str).str.lower().str.contains(clean_club_lower, na=False)
+        for row in combined_bat[mask_bat].to_dict('records'):
+            team = determine_player_team_for_row(row, player_club_map, domain)
+            if team.startswith("Unknown") or "unknown" in team.lower():
+                continue
+            if not club_matches_team_base(clean_club, team):
+                continue
+            raw_name = row.get('Name', '')
+            if not raw_name or pd.isna(raw_name):
+                continue
+            p_name, _, _, _ = resolve_player_from_row(row, raw_name, id_map, alias_map, player_club_map, prefer_nv_play_name=True)
+            p_name = strip_club_suffix(p_name, clean_club)
+            tier = extract_match_tier(team, club_name=clean_club)
+            comp = classify_match_type(row.get('Group', ''), cup_match_set, t20_match_set, domain)
+            grp = str(row.get('Group', ''))
+
+            entry = get_player_entry(p_name)
+            entry["Matches_Set"].add(grp)
+            entry["Tier_Counts"][tier] = entry["Tier_Counts"].get(tier, 0) + 1
+
+            runs = int(row.get('Runs', 0)) if str(row.get('Runs', 0)).isdigit() else 0
+            inns = int(row.get('Innings', 1)) if str(row.get('Innings', 1)).isdigit() else 1
+            no_val = int(row.get('Not Outs', 0)) if str(row.get('Not Outs', 0)).isdigit() else 0
+            fifties = int(row.get('50s', 0)) if str(row.get('50s', 0)).isdigit() else 0
+            hundreds = int(row.get('100s', 0)) if str(row.get('100s', 0)).isdigit() else 0
+            catches = int(row.get('Catches', 0)) if str(row.get('Catches', 0)).isdigit() else 0
+            catches_wk = int(row.get('Catches as Keeper', 0)) if str(row.get('Catches as Keeper', 0)).isdigit() else 0
+            stumpings = int(row.get('Stumpings', 0)) if str(row.get('Stumpings', 0)).isdigit() else 0
+
+            entry["Runs"] += runs
+            entry["Innings_Bat"] += inns
+            entry["Not_Outs"] += no_val
+            entry["50s"] += fifties
+            entry["100s"] += hundreds
+            entry["Catches"] += catches
+            entry["Catches_As_Keeper"] += catches_wk
+            entry["Stumpings"] += stumpings
+            if runs > entry["High_Score"]:
+                entry["High_Score"] = runs
+
+            opp = determine_opposition_team(grp, team, clean_club)
+            m_date = extract_match_date(grp)
+            date_str = m_date.strftime("%d %b %Y") if m_date else "—"
+
+            raw_balls = int(row.get('Balls', 0)) if str(row.get('Balls', 0)).isdigit() else 0
+            has_bat_act = (inns > 0) or (runs > 0) or (raw_balls > 0) or (catches > 0) or (catches_wk > 0) or (stumpings > 0)
+            season_val = int(row.get('Season', extract_season_from_path(grp, 2026)))
+            if has_bat_act:
+                entry["Match_Performances"].append({
+                    "Group": grp,
+                    "Opposition": opp,
+                    "Date": date_str,
+                    "_sort_date": m_date,
+                    "Tier": tier,
+                    "Comp": comp,
+                    "Runs": runs,
+                    "50s": fifties,
+                    "100s": hundreds,
+                    "Wickets": 0,
+                    "5W": 0,
+                    "Maidens": 0,
+                    "Catches": catches,
+                    "Catches_As_Keeper": catches_wk,
+                    "Stumpings": stumpings,
+                    "Season": season_val
+                })
+
+    if not combined_bowl.empty:
+        if '_grp_lower' in combined_bowl.columns:
+            mask_bowl = combined_bowl['_grp_lower'].str.contains(clean_club_lower, regex=False, na=False)
+        else:
+            mask_bowl = combined_bowl['Group'].astype(str).str.lower().str.contains(clean_club_lower, na=False)
+        for row in combined_bowl[mask_bowl].to_dict('records'):
+            team = determine_player_team_for_row(row, player_club_map, domain)
+            if team.startswith("Unknown") or "unknown" in team.lower():
+                continue
+            if not club_matches_team_base(clean_club, team):
+                continue
+            raw_bowler = row.get('Bowler', '')
+            if not raw_bowler or pd.isna(raw_bowler):
+                continue
+            p_name, _, _, _ = resolve_player_from_row(row, raw_bowler, id_map, alias_map, player_club_map, prefer_nv_play_name=True)
+            p_name = strip_club_suffix(p_name, clean_club)
+            tier = extract_match_tier(team, club_name=clean_club)
+            comp = classify_match_type(row.get('Group', ''), cup_match_set, t20_match_set, domain)
+            grp = str(row.get('Group', ''))
+
+            entry = get_player_entry(p_name)
+            entry["Matches_Set"].add(grp)
+            entry["Tier_Counts"][tier] = entry["Tier_Counts"].get(tier, 0) + 1
+
+            wkts = int(row.get('Wickets', 0)) if str(row.get('Wickets', 0)).isdigit() else 0
+            maidens = int(row.get('Maidens', 0)) if str(row.get('Maidens', 0)).isdigit() else 0
+            runs_c = int(row.get('Runs', 0)) if str(row.get('Runs', 0)).isdigit() else 0
+            five_w = int(row.get('Five Wickets in an Innings', 0)) if str(row.get('Five Wickets in an Innings', 0)).isdigit() else (1 if wkts >= 5 else 0)
+
+            ov_raw = str(row.get('Overs', '0')).strip()
+            if '.' in ov_raw:
+                try:
+                    parts = ov_raw.split('.')
+                    entry["Balls_Bowled"] += int(parts[0]) * 6 + int(parts[1])
+                except Exception:
+                    pass
+            elif ov_raw.isdigit():
+                entry["Balls_Bowled"] += int(ov_raw) * 6
+
+            entry["Wickets"] += wkts
+            entry["Maidens"] += maidens
+            entry["Runs_Conceded"] += runs_c
+            entry["5W"] += five_w
+
+            if wkts > entry["Best_Wickets"] or (wkts == entry["Best_Wickets"] and runs_c < entry["Best_Runs"]):
+                entry["Best_Wickets"] = wkts
+                entry["Best_Runs"] = runs_c
+                entry["Best_Bowling"] = f"{wkts}-{runs_c}"
+
+            opp = determine_opposition_team(grp, team, clean_club)
+            m_date = extract_match_date(grp)
+            date_str = m_date.strftime("%d %b %Y") if m_date else "—"
+
+            has_bowl_act = (wkts > 0) or (ov_raw != '0' and ov_raw != '' and ov_raw != '0.0') or (runs_c > 0) or (maidens > 0)
+            season_val_bowl = int(row.get('Season', extract_season_from_path(grp, 2026)))
+            if has_bowl_act:
+                existing_match = next((m for m in entry["Match_Performances"] if m.get("Group") == grp), None)
+                if existing_match is not None:
+                    existing_match["Wickets"] = wkts
+                    existing_match["5W"] = five_w
+                    existing_match["Maidens"] = maidens
+                    existing_match["Season"] = season_val_bowl
+                    if not existing_match.get("Opposition") or existing_match.get("Opposition") == "—":
+                        existing_match["Opposition"] = opp
+                    if not existing_match.get("Date") or existing_match.get("Date") == "—":
+                        existing_match["Date"] = date_str
+                        existing_match["_sort_date"] = m_date
+                else:
+                    entry["Match_Performances"].append({
+                        "Group": grp,
+                        "Opposition": opp,
+                        "Date": date_str,
+                        "_sort_date": m_date,
+                        "Tier": tier,
+                        "Comp": comp,
+                        "Runs": 0,
+                        "50s": 0,
+                        "100s": 0,
+                        "Wickets": wkts,
+                        "5W": five_w,
+                        "Maidens": maidens,
+                        "Catches": 0,
+                        "Stumpings": 0,
+                        "Season": season_val_bowl
+                    })
+
+    rows: List[Dict[str, Any]] = []
+    for p_name, d in player_data.items():
+        total_matches = len(d["Matches_Set"])
+        tier_counts = d["Tier_Counts"]
+        if tier_counts:
+            primary_tier = max(tier_counts.items(), key=lambda x: x[1])[0]
+        else:
+            primary_tier = d["2026_Starred_Tier"] if d["2026_Starred_Tier"] != "Unstarred" else "1st XI"
+
+        seasons_set = {m.get("Season") for m in d["Match_Performances"] if m.get("Season")}
+        seasons_str = ", ".join(str(s) for s in sorted(seasons_set)) if seasons_set else "2026"
+
+        rows.append({
+            "Player": strip_club_suffix(d["Player"], clean_club),
+            "Club": clean_club,
+            "Matches": total_matches,
+            "Runs": d["Runs"],
+            "Innings_Bat": d["Innings_Bat"],
+            "High_Score": d["High_Score"],
+            "50s": d["50s"],
+            "100s": d["100s"],
+            "Wickets": d["Wickets"],
+            "Maidens": d["Maidens"],
+            "Runs_Conceded": d["Runs_Conceded"],
+            "5W": d["5W"],
+            "Best_Bowling": d["Best_Bowling"],
+            "Catches": d["Catches"],
+            "Catches_As_Keeper": d.get("Catches_As_Keeper", 0),
+            "Stumpings": d["Stumpings"],
+            "Keeper_Dismissals": d.get("Catches_As_Keeper", 0) + d["Stumpings"],
+            "Is_Wicket_Keeper": bool(
+                d["Stumpings"] > 0 or
+                d.get("Catches_As_Keeper", 0) >= 2 or
+                (d.get("Catches_As_Keeper", 0) + d["Stumpings"]) >= 3
+            ),
+            "Primary_Team": primary_tier,
+            "Tier_Counts": tier_counts,
+            "Match_Performances": d["Match_Performances"],
+            "Seasons": seasons_str,
+            "2026_Starred_Tier": d["2026_Starred_Tier"],
+            "2026_Starred_Rank": d["2026_Starred_Rank"],
+            "Is_International": d["Is_International"],
+            "Is_Overseas_Pro": d["Is_Overseas_Pro"],
+            "Availability_Dispensation": d["Availability_Dispensation"],
+            "Dispensation_Reason": d["Dispensation_Reason"],
+        })
+
+    res_df = pd.DataFrame(rows)
+    if not res_df.empty:
+        res_df = res_df.sort_values(by=["Runs", "Wickets"], ascending=[False, False]).reset_index(drop=True)
+    return res_df
+
+
+def calculate_projected_starring_scores(
+    perf_df: pd.DataFrame,
+    tier_weights: Optional[Dict[str, float]] = None,
+    comp_weights: Optional[Dict[str, float]] = None,
+    component_weights: Optional[Dict[str, float]] = None,
+    inertia_weight: float = 0.20,
+    inertia_points: Optional[Dict[str, float]] = None,
+    perf_weights: Optional[Dict[str, float]] = None
+) -> pd.DataFrame:
+    """
+    Applies tier and format multipliers to calculate performance points, and linearly blends
+    with baseline starring inertia to compute final 2027 Projected Ratings.
+
+    Inputs:
+        perf_df: DataFrame output from build_club_player_performance_matrix.
+        tier_weights: Multipliers per team level (e.g. {'1st XI': 1.0, '2nd XI': 0.75, ...}).
+        comp_weights: Multipliers per format (e.g. {'League': 1.0, 'Cup': 1.0, 'T20': 0.80, ...}).
+        component_weights: Run, wicket, and milestone values.
+        inertia_weight: Percentage weighting assigned to baseline starring status (0.0 to 0.50).
+        inertia_points: Prior points awarded per 2026 starred tier (+150 for 1st XI, +100 for 2nd XI, +50 for 3rd XI).
+        perf_weights: Optional alias for component_weights.
+
+    Outputs:
+        pd.DataFrame: Augmented DataFrame sorted descending by 'Projected_Rating'.
+
+    Helper Apps:
+        app.py, starring_rules.py, engine.py, tests/test_starring_predictor.py.
+    """
+    if perf_df is None or perf_df.empty:
+        return pd.DataFrame()
+
+    t_weights = tier_weights or {
+        "1st XI": 1.00,
+        "2nd XI": 0.75,
+        "3rd XI": 0.55,
+        "4th XI": 0.40,
+        "5th XI": 0.25,
+        "6th XI": 0.15,
+        "Midweek XI": 0.30
+    }
+    c_weights = comp_weights or {
+        "League": 1.00,
+        "Cup": 1.00,
+        "T20": 0.80,
+        "Midweek": 0.30,
+        "Irish": 1.10
+    }
+    raw_p_weights = component_weights or perf_weights or {}
+    p_weights = {
+        "run_val": 1.0,
+        "fifty_val": 10.0,
+        "century_val": 25.0,
+        "wicket_val": 20.0,
+        "five_w_val": 25.0,
+        "maiden_val": 2.0,
+        "dismissal_val": 10.0,
+        "keeper_dismissal_val": 15.0,
+        "catch_val": 10.0
+    }
+    p_weights.update(raw_p_weights)
+    i_points = inertia_points or {
+        "1st XI": 150.0,
+        "2nd XI": 100.0,
+        "3rd XI": 50.0,
+        "4th XI": 25.0,
+        "5th XI": 10.0,
+        "Unstarred": 0.0
+    }
+
+    df = perf_df.copy()
+    perf_scores: List[float] = []
+    inertia_scores: List[float] = []
+    projected_ratings: List[float] = []
+
+    for _, row in df.iterrows():
+        total_pts = 0.0
+        matches = row.get("Match_Performances", [])
+        if matches:
+            for m in matches:
+                wt = t_weights.get(m.get("Tier", "1st XI"), 0.50)
+                wc = c_weights.get(m.get("Comp", "League"), 1.00)
+                keeper_pts_val = float(p_weights.get("keeper_dismissal_val", p_weights.get("dismissal_val", 15.0)))
+                outfield_pts_val = float(p_weights.get("catch_val", 10.0))
+
+                c_wk = m.get("Catches_As_Keeper", 0)
+                stumps = m.get("Stumpings", 0)
+                c_all = m.get("Catches", 0)
+                if row.get("Is_Wicket_Keeper", False) and c_wk == 0 and (stumps > 0 or c_all > 0):
+                    dismissal_points = keeper_pts_val * (c_all + stumps)
+                else:
+                    c_outfield = max(0, c_all - c_wk)
+                    dismissal_points = (keeper_pts_val * (c_wk + stumps)) + (outfield_pts_val * c_outfield)
+
+                m_pts = (
+                    p_weights.get("run_val", 1.0) * m.get("Runs", 0) +
+                    p_weights.get("fifty_val", 10.0) * m.get("50s", 0) +
+                    p_weights.get("century_val", 25.0) * m.get("100s", 0) +
+                    p_weights.get("wicket_val", 20.0) * m.get("Wickets", 0) +
+                    p_weights.get("five_w_val", 25.0) * m.get("5W", 0) +
+                    p_weights.get("maiden_val", 2.0) * m.get("Maidens", 0) +
+                    dismissal_points
+                )
+                total_pts += wt * wc * m_pts
+        else:
+            wt = t_weights.get(row.get("Primary_Team", "1st XI"), 0.50)
+            keeper_pts_val = float(p_weights.get("keeper_dismissal_val", p_weights.get("dismissal_val", 15.0)))
+            outfield_pts_val = float(p_weights.get("catch_val", 10.0))
+            c_wk = row.get("Catches_As_Keeper", 0)
+            stumps = row.get("Stumpings", 0)
+            c_all = row.get("Catches", 0)
+            if row.get("Is_Wicket_Keeper", False) and c_wk == 0 and (stumps > 0 or c_all > 0):
+                d_pts = keeper_pts_val * (c_all + stumps)
+            else:
+                d_pts = (keeper_pts_val * (c_wk + stumps)) + (outfield_pts_val * max(0, c_all - c_wk))
+
+            total_pts = wt * (
+                p_weights.get("run_val", 1.0) * row.get("Runs", 0) +
+                p_weights.get("fifty_val", 10.0) * row.get("50s", 0) +
+                p_weights.get("century_val", 25.0) * row.get("100s", 0) +
+                p_weights.get("wicket_val", 20.0) * row.get("Wickets", 0) +
+                p_weights.get("five_w_val", 25.0) * row.get("5W", 0) +
+                p_weights.get("maiden_val", 2.0) * row.get("Maidens", 0) +
+                d_pts
+            )
+
+        st_tier = row.get("2026_Starred_Tier", "Unstarred")
+        prior = i_points.get(st_tier, 0.0)
+
+        blended = ((1.0 - inertia_weight) * total_pts) + (inertia_weight * prior)
+
+        perf_scores.append(round(total_pts, 1))
+        inertia_scores.append(round(prior, 1))
+        projected_ratings.append(round(blended, 1))
+
+    df["Performance_Score"] = perf_scores
+    df["Inertia_Bonus"] = inertia_scores
+    df["Projected_Rating"] = projected_ratings
+
+    df = df.sort_values(by=["Projected_Rating", "Runs", "Wickets"], ascending=[False, False, False]).reset_index(drop=True)
+    return df
+
+
+def compile_batch_projected_starring_zip(
+    domain: str = "Men's",
+    custom_files: Optional[Dict[str, str]] = None,
+    tier_weights: Optional[Dict[str, float]] = None,
+    comp_weights: Optional[Dict[str, float]] = None,
+    perf_weights: Optional[Dict[str, float]] = None,
+    inertia_weight: float = 0.20,
+    include_midweek: bool = False,
+    include_irish: bool = True,
+    clubs: Optional[List[str]] = None,
+    progress_callback: Optional[Callable[[int, int, str], None]] = None
+) -> io.BytesIO:
+    """
+    Compiles 2027 projected starring rosters across all NCU clubs into an in-memory ZIP archive.
+    Iterates through each club, allocates waterfall starring tiers under Rule A10 / WA10 quotas,
+    writes the data to dedicated OpenPyXL workbooks styled per GEMINI.md, and compresses them directly
+    into an in-memory zip stream without writing temporary files to disk.
+
+    Inputs:
+        domain: Competition domain ("Men's" or "Women's").
+        custom_files: Optional dictionary mapping file keys ('reg', 'alias', 'bat', 'bowl', 'starring') to paths.
+        tier_weights: Multipliers for performance weighting per team tier.
+        comp_weights: Multipliers for performance weighting per match format.
+        perf_weights: Tuning multipliers for performance scoring (e.g. keeper dismissals).
+        inertia_weight: Blend ratio for historical 2026 starring tier inertia (0.0 to 1.0).
+        include_midweek: Whether to include Midweek League scorecards.
+        include_irish: Whether to include Irish National Cups.
+        clubs: Optional list of clubs to process (defaults to NCU_ALL_CLUBS, containing all 38 clubs).
+        progress_callback: Optional callback receiving (current_index, total_count, club_name).
+
+    Outputs:
+        io.BytesIO: In-memory ZIP buffer containing all formatted club .xlsx workbooks.
+
+    Helper Apps:
+        app.py, engine.py, starring_rules.py, tests/test_starring_predictor.py.
+    """
+    import starring_rules as sr
+
+    target_clubs = list(clubs) if clubs is not None else list(NCU_ALL_CLUBS)
+    total_clubs = len(target_clubs)
+
+    c_files = dict(DEFAULT_FILES.get(domain, DEFAULT_FILES["Men's"]))
+    if custom_files:
+        c_files.update(custom_files)
+
+    f_starring = c_files.get("starring", "")
+    parsed_club_dict: Dict[str, pd.DataFrame] = {}
+    if f_starring and os.path.exists(f_starring):
+        _, parsed_club_dict = cached_parse_starring_data(f_starring, os.path.getmtime(f_starring))
+
+    all_club_counts = get_all_club_team_counts()
+
+    # Pre-prime domain context cache
+    get_perf_matrix_domain_context(domain, include_midweek, include_irish, custom_files)
+
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for idx, club in enumerate(target_clubs, start=1):
+            if progress_callback:
+                progress_callback(idx, total_clubs, club)
+
+            clean_club_str = extract_base_club_name(club).strip()
+            club_star_df = parsed_club_dict.get(clean_club_str, parsed_club_dict.get(club, pd.DataFrame()))
+            auto_teams = sr.get_club_senior_team_count(
+                club_name=club,
+                domain=domain,
+                club_starring_df=club_star_df,
+                all_club_counts=all_club_counts
+            )
+
+            perf_matrix = build_club_player_performance_matrix(
+                club_name=club,
+                domain=domain,
+                include_midweek=include_midweek,
+                include_irish=include_irish,
+                custom_files=custom_files
+            )
+
+            if not perf_matrix.empty:
+                scored_df = calculate_projected_starring_scores(
+                    perf_df=perf_matrix,
+                    tier_weights=tier_weights,
+                    comp_weights=comp_weights,
+                    perf_weights=perf_weights,
+                    inertia_weight=inertia_weight
+                )
+                club_disp_df = sr.load_board_dispensations(club_name=club, season=2027)
+                persisted_intl = sr.load_international_exemptions(club, domain=domain)
+                roster_df = sr.allocate_waterfall_starring_roster(
+                    player_data_df=scored_df,
+                    team_count=int(auto_teams),
+                    domain=domain,
+                    dispensations=club_disp_df
+                )
+                if "Player" in roster_df.columns:
+                    roster_df["Player"] = roster_df["Player"].apply(lambda p: strip_club_suffix(str(p)))
+            else:
+                roster_df = pd.DataFrame()
+
+            wb = sr.build_club_projected_starring_workbook(roster_df, club)
+            wb_buf = io.BytesIO()
+            wb.save(wb_buf)
+            wb.close()
+
+            clean_fn = f"{club.replace(' ', '_')}_2027_Projected_Starring.xlsx"
+            zf.writestr(clean_fn, wb_buf.getvalue())
+
+    zip_buffer.seek(0)
+    return zip_buffer
+
